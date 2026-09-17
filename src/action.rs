@@ -32,4 +32,6 @@ pub enum Action {
     ConfirmNo,
     TriggerSync,
     TriggerCheck,
+    EnterExport,
+    SaveExport,
 }

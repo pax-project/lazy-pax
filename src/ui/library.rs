@@ -47,6 +47,12 @@ impl LibraryScreen {
         self.all_papers().map(|papers| filter_by_query(papers, &self.query))
     }
 
+    /// Every declared paper, ignoring any applied filter — for export,
+    /// which per the DoD covers the whole library, not the filtered view.
+    pub fn declared_papers(&self) -> &[Paper] {
+        self.all_papers().unwrap_or(&[])
+    }
+
     pub fn move_down(&mut self) {
         if let Some(papers) = self.visible_papers().filter(|p| !p.is_empty()) {
             self.selected = (self.selected + 1) % papers.len();
@@ -314,5 +320,18 @@ mod tests {
     #[test]
     fn selected_paper_is_none_before_the_library_loads() {
         assert!(LibraryScreen::default().selected_paper().is_none());
+    }
+
+    #[test]
+    fn declared_papers_ignores_the_filter() {
+        let mut screen = loaded(fixture());
+        screen.query = "hewitt".to_string();
+        assert_eq!(screen.visible_papers().unwrap().len(), 1);
+        assert_eq!(screen.declared_papers().len(), 2);
+    }
+
+    #[test]
+    fn declared_papers_is_empty_before_the_library_loads() {
+        assert!(LibraryScreen::default().declared_papers().is_empty());
     }
 }

@@ -1,5 +1,6 @@
 pub mod detail;
 pub mod edit;
+pub mod export;
 pub mod library;
 pub mod reports;
 pub mod search;
@@ -41,6 +42,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
             let checks = app.check_report.as_ref().unwrap_or(&empty);
             reports::draw_check(frame, checks, app.check_selected, content);
         }
+        Screen::Export => {
+            let editing = matches!(app.mode, Mode::Insert(InsertTarget::ExportPath));
+            export::draw(frame, &app.export, editing, content);
+        }
     }
 
     draw_status_bar(frame, app, status);
@@ -73,12 +78,12 @@ fn hint_text(app: &App) -> String {
             }
             _ if !app.library.query.is_empty() => {
                 format!(
-                    "Filter: {}  (Enter/l, f: fetch, o: open, e: edit, d: remove, s: sync, c: check, /: edit filter, Esc: clear, S: search, q: quit)",
+                    "Filter: {}  (Enter/l, f: fetch, o: open, e: edit, d: remove, s: sync, c: check, E: export, /: edit filter, Esc: clear, S: search, q: quit)",
                     app.library.query
                 )
             }
             _ => {
-                "Enter/l: view  f: fetch  o: open  e: edit  d: remove  s: sync  c: check  /: filter  S: search  q: quit"
+                "Enter/l: view  f: fetch  o: open  e: edit  d: remove  s: sync  c: check  E: export  /: filter  S: search  q: quit"
                     .to_string()
             }
         },
@@ -98,5 +103,9 @@ fn hint_text(app: &App) -> String {
             Mode::Normal => "j/k: field  i/Enter: edit  a: add tag  x: remove tag  w: save  Esc: back".to_string(),
         },
         Screen::SyncReport | Screen::CheckReport => "j/k: scroll  Esc: back  q: quit".to_string(),
+        Screen::Export => match &app.mode {
+            Mode::Insert(_) => "Enter: apply  Esc: cancel".to_string(),
+            Mode::Normal => "i/p: set path  w: write  Esc: back  q: quit".to_string(),
+        },
     }
 }

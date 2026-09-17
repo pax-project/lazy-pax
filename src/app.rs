@@ -9,6 +9,7 @@ use crate::message::{Effect, Message};
 use crate::status::StatusBar;
 use crate::ui::detail::{DetailScreen, DetailSubject};
 use crate::ui::edit::EditScreen;
+use crate::ui::export::ExportScreen;
 use crate::ui::library::{LibraryScreen, LibraryState};
 use crate::ui::search::{SearchKind, SearchScreen, SearchState};
 
@@ -22,6 +23,7 @@ pub enum Screen {
     Edit,
     SyncReport,
     CheckReport,
+    Export,
 }
 
 /// Normal (navigation) vs. text-entry input. `Insert` carries which field
@@ -43,6 +45,7 @@ pub enum InsertTarget {
     EditAuthors,
     EditYear,
     EditDoi,
+    ExportPath,
 }
 
 /// Tracks a `g` press waiting for a second key (`gg` -> go to top). Reset on
@@ -84,6 +87,7 @@ pub struct App {
     pub sync_selected: usize,
     pub check_report: Option<Vec<pax_core::CheckReport>>,
     pub check_selected: usize,
+    pub export: ExportScreen,
 }
 
 impl App {
@@ -105,6 +109,7 @@ impl App {
             sync_selected: 0,
             check_report: None,
             check_selected: 0,
+            export: ExportScreen::default(),
         }
     }
 
@@ -181,6 +186,7 @@ impl App {
                 match target {
                     InsertTarget::LibraryFilter => self.library.begin_filter_edit(),
                     InsertTarget::SearchQuery => self.search.begin_query_edit(),
+                    InsertTarget::ExportPath => self.export.buffer = self.export.path.clone(),
                     edit_target => self.edit.begin_field_edit(edit_target),
                 }
                 self.mode = Mode::Insert(target);
@@ -224,7 +230,7 @@ impl App {
                         .selected_candidate()
                         .map(|(work, in_library)| DetailSubject::Candidate { work, in_library }),
                     Screen::Library => self.library.selected_paper().map(DetailSubject::Declared),
-                    Screen::Detail | Screen::Edit | Screen::SyncReport | Screen::CheckReport => None,
+                    Screen::Detail | Screen::Edit | Screen::SyncReport | Screen::CheckReport | Screen::Export => None,
                 };
                 if let Some(subject) = subject {
                     self.detail.subject = Some(subject);
@@ -272,7 +278,41 @@ impl App {
             }
             Action::TriggerSync => self.trigger_library_job(JobKind::Sync, "Syncing library…"),
             Action::TriggerCheck => self.trigger_library_job(JobKind::Check, "Checking library…"),
+            Action::EnterExport => {
+                if self.screen == Screen::Library {
+                    // Pure/no I/O — pax_core::bibtex::render just formats a
+                    // string from data already in memory, so it's called
+                    // directly here rather than through a job, same as
+                    // filter_papers.
+                    let bibtex = pax_core::bibtex::render(self.library.declared_papers());
+                    self.export = ExportScreen {
+                        bibtex,
+                        path: String::new(),
+                        buffer: String::new(),
+                    };
+                    self.push_screen(Screen::Export);
+                }
+                Vec::new()
+            }
+            Action::SaveExport => self.save_export(),
         }
+    }
+
+    fn save_export(&mut self) -> Vec<Effect> {
+        if self.screen != Screen::Export {
+            return Vec::new();
+        }
+        if self.export.path.is_empty() {
+            self.status.error("No file path entered — press i/p to type one");
+            return Vec::new();
+        }
+        if !self.start_job() {
+            return Vec::new();
+        }
+        let path = std::path::PathBuf::from(&self.export.path);
+        let content = self.export.bibtex.clone();
+        self.status.pending(format!("Writing {}…", self.export.path));
+        vec![Effect::Spawn(JobKind::ExportToFile { path, content })]
     }
 
     /// `Sync`/`Check` aren't scoped to a selected paper — they're always
@@ -324,7 +364,7 @@ impl App {
                 Some(DetailSubject::Declared(paper)) => Some(paper.clone()),
                 _ => None,
             },
-            Screen::Search | Screen::Edit | Screen::SyncReport | Screen::CheckReport => None,
+            Screen::Search | Screen::Edit | Screen::SyncReport | Screen::CheckReport | Screen::Export => None,
         }
     }
 
@@ -396,7 +436,7 @@ impl App {
                 let len = self.check_report.as_ref().map_or(0, Vec::len);
                 move_index_down(&mut self.check_selected, len);
             }
-            Screen::Detail => {}
+            Screen::Detail | Screen::Export => {}
         }
     }
 
@@ -413,7 +453,7 @@ impl App {
                 let len = self.check_report.as_ref().map_or(0, Vec::len);
                 move_index_up(&mut self.check_selected, len);
             }
-            Screen::Detail => {}
+            Screen::Detail | Screen::Export => {}
         }
     }
 
@@ -424,7 +464,7 @@ impl App {
             Screen::Edit => self.edit.go_top(),
             Screen::SyncReport => self.sync_selected = 0,
             Screen::CheckReport => self.check_selected = 0,
-            Screen::Detail => {}
+            Screen::Detail | Screen::Export => {}
         }
     }
 
@@ -441,7 +481,7 @@ impl App {
                 let len = self.check_report.as_ref().map_or(0, Vec::len);
                 self.check_selected = len.saturating_sub(1);
             }
-            Screen::Detail => {}
+            Screen::Detail | Screen::Export => {}
         }
     }
 
@@ -449,6 +489,7 @@ impl App {
         match self.mode {
             Mode::Insert(InsertTarget::LibraryFilter) => self.library.filter_buffer.push(c),
             Mode::Insert(InsertTarget::SearchQuery) => self.search.query_buffer.push(c),
+            Mode::Insert(InsertTarget::ExportPath) => self.export.buffer.push(c),
             Mode::Insert(_) => self.edit.buffer.push(c),
             Mode::Normal => {}
         }
@@ -461,6 +502,9 @@ impl App {
             }
             Mode::Insert(InsertTarget::SearchQuery) => {
                 self.search.query_buffer.pop();
+            }
+            Mode::Insert(InsertTarget::ExportPath) => {
+                self.export.buffer.pop();
             }
             Mode::Insert(_) => {
                 self.edit.buffer.pop();
@@ -476,6 +520,11 @@ impl App {
                 Vec::new()
             }
             Mode::Insert(InsertTarget::SearchQuery) => self.submit_search_query(),
+            Mode::Insert(InsertTarget::ExportPath) => {
+                self.export.path = self.export.buffer.clone();
+                self.export.buffer.clear();
+                Vec::new()
+            }
             Mode::Insert(target) => {
                 self.edit.commit_field_edit(target);
                 Vec::new()
@@ -602,6 +651,10 @@ impl App {
                 self.push_screen(Screen::CheckReport);
             }
             JobOutcome::Checked(Err(e)) => self.status.error(e.to_string()),
+            JobOutcome::Exported { path, result } => match result {
+                Ok(()) => self.status.success(format!("Exported to {}", path.display())),
+                Err(e) => self.status.error(format!("{}: {e}", path.display())),
+            },
         }
         Vec::new()
     }
@@ -1490,5 +1543,97 @@ mod tests {
         assert!(matches!(app.screen, Screen::SyncReport));
         app.apply(Action::Back);
         assert!(matches!(app.screen, Screen::Library));
+    }
+
+    #[test]
+    fn enter_export_renders_bibtex_from_every_declared_paper_ignoring_the_filter() {
+        let mut app = with_two_papers();
+        app.library.query = "hewitt".to_string(); // filtered view would be just one paper
+        app.apply(Action::EnterExport);
+        assert!(matches!(app.screen, Screen::Export));
+        assert!(app.export.bibtex.contains("turing1936"));
+        assert!(app.export.bibtex.contains("hewitt1973"));
+        assert_eq!(app.export.path, "");
+    }
+
+    #[test]
+    fn enter_export_is_a_no_op_outside_library() {
+        let mut app = with_search_results();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::EnterExport);
+        assert!(matches!(app.screen, Screen::Search));
+    }
+
+    #[test]
+    fn save_export_without_a_path_shows_an_error_and_spawns_nothing() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterExport);
+        let effects = app.apply(Action::SaveExport);
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+    }
+
+    #[test]
+    fn typing_a_path_and_submitting_commits_it_then_save_export_spawns_the_job() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterExport);
+        app.apply(Action::EnterInsert(InsertTarget::ExportPath));
+        for c in "out.bib".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        app.apply(Action::SubmitInput);
+        assert_eq!(app.export.path, "out.bib");
+        assert!(matches!(app.mode, Mode::Normal));
+
+        let effects = app.apply(Action::SaveExport);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::ExportToFile { path, .. })] if path.to_str() == Some("out.bib")
+        ));
+        assert!(app.job_running);
+        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+    }
+
+    #[test]
+    fn successful_export_shows_the_written_path() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterExport);
+        app.export.path = "out.bib".to_string();
+        app.apply(Action::SaveExport);
+        app.update(Message::Job(
+            2,
+            JobOutcome::Exported {
+                path: std::path::PathBuf::from("out.bib"),
+                result: Ok(()),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Success, msg)) if msg.contains("out.bib")
+        ));
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn failed_export_shows_the_io_error() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterExport);
+        app.export.path = "/root/no-permission.bib".to_string();
+        app.apply(Action::SaveExport);
+        app.update(Message::Job(
+            2,
+            JobOutcome::Exported {
+                path: std::path::PathBuf::from("/root/no-permission.bib"),
+                result: Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied")),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg)) if msg.contains("no-permission.bib")
+        ));
     }
 }

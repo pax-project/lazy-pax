@@ -116,8 +116,10 @@ reopens an item — it should stay accurate rather than aspirational.
 
 ### Export
 
-- [ ] Export library as BibTeX, viewable in-app
-- [ ] Export writable to a file the user chooses
+- [x] Export library as BibTeX, viewable in-app (`E` from Library; always
+      the whole declared library, ignoring any applied filter)
+- [x] Export writable to a file the user chooses (`i`/`p` to type a path,
+      `w` to write)
 
 ### Init
 
@@ -394,16 +396,41 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       whole run; `check` came back with `papers.nix` byte-for-byte
       unchanged, confirming it's genuinely read-only; `j` scroll and
       `Esc`-back from the report screen both worked cleanly.
-- [ ] 12. Export (bibtex render + optional file write)
+- [x] 12. Export (bibtex render + optional file write) — new
+      `Screen::Export`, reached via `E` from Library only.
+      `pax_core::bibtex::render` is pure (no I/O, just formats a `String`
+      from data already in memory), so it's called directly when entering
+      the screen — same treatment as `filter_papers`, no job. Always
+      renders every declared paper via a new
+      `LibraryScreen::declared_papers()`, deliberately bypassing the
+      applied filter (`visible_papers()`) — export covers the whole
+      library per the DoD, not whatever subset happens to be filtered in.
+      `i`/`p` opens the one editable field (a file path, via
+      `InsertTarget::ExportPath` — reusing the same generic Insert-mode
+      machinery, one more field, mechanical); `w` in Normal mode spawns
+      `JobKind::ExportToFile`, a plain `std::fs::write` — not a
+      `pax_core` call at all, but still routed through `job.rs`, keeping
+      the "every blocking I/O call lives in one auditable place" rule
+      intact even for non-`pax_core` I/O. Guarded a real near-miss caught
+      before it compiled: `w` was briefly wired into the *Insert*-mode key
+      table (would have made typing a path containing the letter "w"
+      impossible to type past), caught by re-reading the diff and moved to
+      the Normal-mode table where `w` belongs — a permanent regression
+      test locks in that a literal "w" while editing still types as a
+      character, not save.
+      Verified: clean build/clippy, 138 unit tests pass (up from 127); ran
+      end-to-end against a real two-paper library — `E` → `i` → typed path
+      → `Enter` → `w` produced a file with correct, valid BibTeX for both
+      papers (including the with-DOI-and-tags and without-either cases).
 - [ ] 13. Init-on-launch
 
 ## Critical path
 
-Steps 1–11 of the build order are done (see above) — `lazypax` can search,
-inspect, declare, fetch, open, edit, remove, sync, and check papers
-end-to-end, all verified against real `nix`/`pax_core` calls, not just
-fixtures. Only export and init-on-launch remain. Standing reminders for
-whatever comes next:
+Steps 1–12 of the build order are done (see above) — `lazypax` can search,
+inspect, declare, fetch, open, edit, remove, sync, check, and export papers
+end-to-end, all verified against real `nix`/`pax_core`/filesystem calls, not
+just fixtures. Only init-on-launch remains — the last item on the whole
+build order. Standing reminders for whatever comes next:
 
 - **The DSR cursor-query fix in `TerminalGuard::resume()`** (use `resize()`,
   not `clear()`) is a real, general-purpose fix, not a `script`-specific
@@ -426,5 +453,10 @@ whatever comes next:
   from_drifting` test); any new event-entry path into `App::update()` that
   bypassed `keymap` would reopen this.
 
-Next: step 12, Export — BibTeX render (pure, no I/O, callable directly like
-`filter_papers` rather than as a job) plus an optional file-write job.
+Next: step 13, Init-on-launch — offer to run `init_library` when
+`LoadLibrary`'s startup dispatch comes back `PaxError::Io(NotFound)` (the
+same condition `LibraryState::NotInitialized` already detects, from step 2
+— this step is "add an action to that existing state," not new detection
+logic). Every other step so far has developed against a pre-created fixture
+library the whole time; this is the first and last step that touches the
+uninitialized-directory path.

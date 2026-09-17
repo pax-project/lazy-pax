@@ -56,7 +56,12 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         }
         KeyCode::Esc => Some(match screen {
             Screen::Library => Action::ClearFilter,
-            Screen::Search | Screen::Detail | Screen::Edit | Screen::SyncReport | Screen::CheckReport => Action::Back,
+            Screen::Search
+            | Screen::Detail
+            | Screen::Edit
+            | Screen::SyncReport
+            | Screen::CheckReport
+            | Screen::Export => Action::Back,
         }),
         KeyCode::Char('/') if matches!(screen, Screen::Library) => {
             Some(Action::EnterInsert(InsertTarget::LibraryFilter))
@@ -76,6 +81,11 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         KeyCode::Char('d') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::TriggerRemove),
         KeyCode::Char('s') if matches!(screen, Screen::Library) => Some(Action::TriggerSync),
         KeyCode::Char('c') if matches!(screen, Screen::Library) => Some(Action::TriggerCheck),
+        KeyCode::Char('E') if matches!(screen, Screen::Library) => Some(Action::EnterExport),
+        KeyCode::Char('i') | KeyCode::Char('p') if matches!(screen, Screen::Export) => {
+            Some(Action::EnterInsert(InsertTarget::ExportPath))
+        }
+        KeyCode::Char('w') if matches!(screen, Screen::Export) => Some(Action::SaveExport),
         KeyCode::Char('w') if matches!(screen, Screen::Edit) => Some(Action::SaveEdit),
         KeyCode::Char('a') if matches!(screen, Screen::Edit) => Some(Action::EnterInsert(InsertTarget::EditTagAdd)),
         KeyCode::Char('x') if matches!(screen, Screen::Edit) => Some(Action::RemoveLastTag),
@@ -341,6 +351,47 @@ mod tests {
             map_key(&Screen::CheckReport, &Mode::Normal, false, &mut pending, key_code(KeyCode::Esc)),
             Some(Action::Back)
         );
+    }
+
+    #[test]
+    fn capital_e_enters_export_only_from_library() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('E')),
+            Some(Action::EnterExport)
+        );
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('E')), None);
+    }
+
+    #[test]
+    fn export_screen_bindings() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(&Screen::Export, &Mode::Normal, false, &mut pending, key('i')),
+            Some(Action::EnterInsert(InsertTarget::ExportPath))
+        );
+        assert_eq!(
+            map_key(&Screen::Export, &Mode::Normal, false, &mut pending, key('p')),
+            Some(Action::EnterInsert(InsertTarget::ExportPath))
+        );
+        assert_eq!(
+            map_key(&Screen::Export, &Mode::Normal, false, &mut pending, key('w')),
+            Some(Action::SaveExport)
+        );
+        assert_eq!(
+            map_key(&Screen::Export, &Mode::Normal, false, &mut pending, key_code(KeyCode::Esc)),
+            Some(Action::Back)
+        );
+    }
+
+    #[test]
+    fn typing_w_while_editing_the_export_path_is_a_literal_character_not_save() {
+        // Regression guard: 'w' must not trigger SaveExport while the user
+        // is still typing the path (e.g. a path containing the letter 'w')
+        // — only in Normal mode, after Enter has committed the buffer.
+        let mode = Mode::Insert(InsertTarget::ExportPath);
+        let mut pending = PendingInput::default();
+        assert_eq!(map_key(&Screen::Export, &mode, false, &mut pending, key('w')), Some(Action::InputChar('w')));
     }
 
     #[test]

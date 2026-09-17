@@ -170,7 +170,7 @@ impl EditScreen {
             InsertTarget::EditAuthors => self.authors.clone(),
             InsertTarget::EditYear => self.year.clone(),
             InsertTarget::EditDoi => self.doi.clone(),
-            InsertTarget::LibraryFilter | InsertTarget::SearchQuery => String::new(),
+            InsertTarget::LibraryFilter | InsertTarget::SearchQuery | InsertTarget::ExportPath => String::new(),
         };
     }
 
@@ -188,7 +188,7 @@ impl EditScreen {
             InsertTarget::EditAuthors => self.authors = self.buffer.clone(),
             InsertTarget::EditYear => self.year = self.buffer.clone(),
             InsertTarget::EditDoi => self.doi = self.buffer.clone(),
-            InsertTarget::LibraryFilter | InsertTarget::SearchQuery => {}
+            InsertTarget::LibraryFilter | InsertTarget::SearchQuery | InsertTarget::ExportPath => {}
         }
         self.buffer.clear();
     }
