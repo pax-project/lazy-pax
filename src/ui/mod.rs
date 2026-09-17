@@ -1,4 +1,5 @@
 pub mod library;
+pub mod search;
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -13,6 +14,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     match app.screen {
         Screen::Library => library::draw(frame, &app.library, content),
+        Screen::Search => {
+            let editing = matches!(app.mode, Mode::Insert(InsertTarget::SearchQuery));
+            search::draw(frame, &app.search, editing, content);
+        }
     }
 
     draw_status_bar(frame, app, status);
@@ -28,13 +33,16 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn hint_text(app: &App) -> String {
-    match (&app.screen, &app.mode) {
-        (Screen::Library, Mode::Insert(InsertTarget::LibraryFilter)) => {
-            format!("Filter: {}▏  (Enter: apply, Esc: cancel)", app.library.filter_buffer)
-        }
-        (Screen::Library, Mode::Normal) if !app.library.query.is_empty() => {
-            format!("Filter: {}  (/: edit, Esc: clear, q: quit)", app.library.query)
-        }
-        (Screen::Library, Mode::Normal) => "/: filter  q: quit".to_string(),
+    match app.screen {
+        Screen::Library => match &app.mode {
+            Mode::Insert(InsertTarget::LibraryFilter) => {
+                format!("Filter: {}▏  (Enter: apply, Esc: cancel)", app.library.filter_buffer)
+            }
+            _ if !app.library.query.is_empty() => {
+                format!("Filter: {}  (/: edit, Esc: clear, S: search, q: quit)", app.library.query)
+            }
+            _ => "/: filter  S: search  q: quit".to_string(),
+        },
+        Screen::Search => "Esc: back  q: quit".to_string(),
     }
 }

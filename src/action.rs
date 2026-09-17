@@ -15,4 +15,7 @@ pub enum Action {
     InputChar(char),
     InputBackspace,
     ClearFilter,
+    GoToSearch,
+    Back,
+    CycleSearchMode,
 }

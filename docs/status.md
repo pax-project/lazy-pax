@@ -16,9 +16,9 @@ reopens an item — it should stay accurate rather than aspirational.
 - [ ] A library produced/modified by `lazypax` stays fully usable from the
       plain `pax` CLI, and vice versa (nothing writes yet — first checkable
       once add/edit/remove/fetch land)
-- [ ] All provider network calls go through `pax_core`'s `Provider` impls —
-      no direct provider API calls from `lazypax` (no provider calls made
-      yet — step 4)
+- [x] All provider network calls go through `pax_core`'s `Provider` impls —
+      no direct provider API calls from `lazypax` (`search_all`/
+      `search_by_author`/`search_by_doi`, via `job::spawn_search`)
 - [x] Provider search / `nix` calls (`fetch`/`open`/`check`/`sync`) run off
       the UI thread/event loop (`job::spawn` wraps blocking calls in
       `tokio::task::spawn_blocking`; established with `LoadLibrary`, applies
@@ -43,12 +43,16 @@ reopens an item — it should stay accurate rather than aspirational.
 
 ### Search view
 
-- [ ] Free-text search across all providers, provider-grouped results
-- [ ] Per-result fields: title, authors, year, venue, DOI, PDF-availability,
-      in-library indicator
-- [ ] A single failing provider degrades only its section
-- [ ] Author-only search mode reachable
-- [ ] DOI-only search mode reachable
+- [x] Free-text search across all providers, provider-grouped results
+      (fixed provider order — OpenAlex, Crossref, Semantic Scholar, arXiv —
+      matching the `pax` CLI's own iteration order)
+- [x] Per-result fields: title, authors, year, venue, DOI, PDF-availability,
+      in-library indicator (`known_dois` + `normalize_doi`, same as the CLI)
+- [x] A single failing provider degrades only its section (rendered as a
+      one-line "provider: failed — ..." note above the results list, rather
+      than blocking or omitting the other providers' results)
+- [x] Author-only search mode reachable (`Tab` cycles Free → Author → DOI)
+- [x] DOI-only search mode reachable
 
 ### Paper detail view
 
@@ -163,7 +167,27 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       another byte can parse as an Alt+key chord instead of two separate
       keys — which isn't specific to this app and doesn't occur with real
       human typing speed).
-- [ ] 4. Search view + provider-grouped rendering
+- [x] 4. Search view + provider-grouped rendering — `Screen::Search` added,
+      reached via `S` from Library (auto-enters query-edit Insert mode);
+      `Tab` cycles Free/Author/DOI, `Enter` dispatches the matching
+      `JobKind`, `Esc` goes back to Library. Results render as a flat list
+      in fixed provider order with a global selection cursor; a failing
+      provider's error is a one-line note above the list, not a blocker.
+      **Real, unplanned architectural fix**: `pax_core`'s search functions
+      turned out to be `!Send` (the `crossref` crate's HTTP client holds an
+      `Rc` internally), so they can't run on `tokio::spawn`'s default
+      multi-threaded executor as the plan assumed — discovered as a genuine
+      compiler error, not a judgment call. Fixed by giving each search job
+      its own OS thread with a small current-thread Tokio runtime
+      (`job::spawn_search`), still fully off the main event loop either way.
+      `known_dois` is now called directly inside that same thread rather
+      than via a separate `spawn_blocking` (already off the main runtime).
+      Verified: clean build/clippy, 42 unit tests pass (up from 27); ran all
+      three search modes end-to-end against the real provider APIs (network
+      available in this sandbox) with clean exits, no panics — free-text
+      "actor model", author "Hewitt", and DOI
+      10.1112/plms/s2-42.1.230 — plus Esc-back-to-Library after a real
+      search.
 - [ ] 5. Detail view for a `CandidateWork`
 - [ ] 6. Add flow (`JobKind::AddCandidate`)
 - [ ] 7. Detail view for a declared `Paper`
@@ -176,9 +200,12 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
 
 ## Critical path
 
-Steps 1–3 of the build order are done (see above) — `lazypax` loads a real
-`research/papers.nix` on startup, renders it as a navigable table, and now
-supports an in-memory `/`-filter with the vim-style Insert-mode machinery
-every later text field (search query, notes, rename, etc.) will reuse. Next:
-step 4, the search view + provider-grouped rendering — the first feature
-needing live network calls and `PaxCtx`'s `pax_core::Config` field.
+Steps 1–4 of the build order are done (see above) — `lazypax` now has two
+working screens (Library, Search), live provider search in all three modes,
+and the vim-style Insert-mode machinery every later text field reuses. Worth
+remembering for later steps: `job::spawn_search`'s dedicated-OS-thread
+pattern (not `tokio::spawn`) is required for *any* future job that awaits a
+`pax_core` async fn touching Crossref — that includes `resolve_candidate`,
+`add_candidate` (step 6), and `show_reference` (step 5/7), not just search.
+Next: step 5, a detail view for an unresolved `CandidateWork` (no new job
+needed — it's pure state/rendering over data already fetched by search).
