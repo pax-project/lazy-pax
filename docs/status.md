@@ -31,7 +31,11 @@ reopens an item — it should stay accurate rather than aspirational.
 - [x] Lists declared papers (citation key, title, authors, year)
 - [x] Fetched vs. not-fetched shown at a glance (✓/✗ column from
       `artifact.hash.is_some()`)
-- [ ] Incremental local filtering by author/year/tag
+- [x] Incremental local filtering by author/year/tag (`/` opens a vim-style
+      insert-mode buffer over the citation key; `Enter` applies it via
+      `pax_core::filter_papers` — three single-field calls, author/tag/year,
+      unioned by citation key rather than ANDed against one string; `Esc`
+      cancels an in-progress edit or clears an applied filter)
 - [x] Explicit empty-library state (and a distinct
       not-yet-initialized-here state, ahead of the DoD's own wording, since
       `PaxError::Io(NotFound)` needed handling to avoid a raw error on first
@@ -142,7 +146,23 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       no panics. Note: this sandbox's pty doesn't report a real terminal
       size, so the actual rendered layout couldn't be visually confirmed
       here — worth a quick `cargo run` in a real terminal to eyeball it.
-- [ ] 3. In-memory `/`-filter via `filter_papers`
+- [x] 3. In-memory `/`-filter via `filter_papers` — introduced `Mode`
+      (Normal/Insert) and `InsertTarget` to `app.rs`, and the generic
+      Insert-mode key routing (`KeyChar`/`Backspace`/`Enter`/`Esc` ->
+      `InputChar`/`InputBackspace`/`SubmitInput`/`CancelInput`) that every
+      future text field reuses. `/` opens the buffer prefilled with the
+      currently-applied query; `Enter` commits, `Esc` discards the buffer
+      (or clears an applied filter from Normal mode). A no-match state
+      ("No papers match the current filter") is distinct from the
+      genuinely-empty-library state. Verified: clean build/clippy, 27 unit
+      tests pass (up from 14 — keymap's Insert-mode routing,
+      `filter_by_query`'s per-field union semantics, `App`'s
+      enter/type/submit/cancel/clear flows); ran end-to-end in a pty with
+      realistic inter-keystroke delays (immediate, unspaced piped input hits
+      a well-known terminal ambiguity — a bare `Esc` immediately followed by
+      another byte can parse as an Alt+key chord instead of two separate
+      keys — which isn't specific to this app and doesn't occur with real
+      human typing speed).
 - [ ] 4. Search view + provider-grouped rendering
 - [ ] 5. Detail view for a `CandidateWork`
 - [ ] 6. Add flow (`JobKind::AddCandidate`)
@@ -156,9 +176,9 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
 
 ## Critical path
 
-Steps 1–2 of the build order are done (see above) — `lazypax` now loads a
-real `research/papers.nix` on startup via `pax_core::Library::load` (off the
-UI thread) and renders it as a navigable, selection-highlighted table, with
-distinct not-initialized/empty/loaded states. Next: step 3, the in-memory
-`/`-filter via `filter_papers` (no new job needed — it's pure and operates
-on the already-loaded `Vec<Paper>`).
+Steps 1–3 of the build order are done (see above) — `lazypax` loads a real
+`research/papers.nix` on startup, renders it as a navigable table, and now
+supports an in-memory `/`-filter with the vim-style Insert-mode machinery
+every later text field (search query, notes, rename, etc.) will reuse. Next:
+step 4, the search view + provider-grouped rendering — the first feature
+needing live network calls and `PaxCtx`'s `pax_core::Config` field.
