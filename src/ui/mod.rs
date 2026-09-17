@@ -1,3 +1,4 @@
+pub mod detail;
 pub mod library;
 pub mod search;
 
@@ -18,6 +19,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             let editing = matches!(app.mode, Mode::Insert(InsertTarget::SearchQuery));
             search::draw(frame, &app.search, editing, content);
         }
+        Screen::Detail => detail::draw(frame, &app.detail, content),
     }
 
     draw_status_bar(frame, app, status);
@@ -43,6 +45,7 @@ fn hint_text(app: &App) -> String {
             }
             _ => "/: filter  S: search  q: quit".to_string(),
         },
-        Screen::Search => "Esc: back  q: quit".to_string(),
+        Screen::Search => "Enter/l: view  Esc: back  q: quit".to_string(),
+        Screen::Detail => "Esc: back  q: quit".to_string(),
     }
 }

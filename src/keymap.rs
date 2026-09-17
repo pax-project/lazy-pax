@@ -39,14 +39,17 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         }
         KeyCode::Esc => Some(match screen {
             Screen::Library => Action::ClearFilter,
-            Screen::Search => Action::Back,
+            Screen::Search | Screen::Detail => Action::Back,
         }),
-        KeyCode::Char('/') => Some(Action::EnterInsert(match screen {
-            Screen::Library => InsertTarget::LibraryFilter,
-            Screen::Search => InsertTarget::SearchQuery,
-        })),
+        KeyCode::Char('/') if matches!(screen, Screen::Library) => {
+            Some(Action::EnterInsert(InsertTarget::LibraryFilter))
+        }
+        KeyCode::Char('/') if matches!(screen, Screen::Search) => {
+            Some(Action::EnterInsert(InsertTarget::SearchQuery))
+        }
         KeyCode::Char('S') if matches!(screen, Screen::Library) => Some(Action::GoToSearch),
         KeyCode::Tab if matches!(screen, Screen::Search) => Some(Action::CycleSearchMode),
+        KeyCode::Enter | KeyCode::Char('l') if matches!(screen, Screen::Search) => Some(Action::OpenDetail),
         _ => None,
     }
 }
@@ -139,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_in_normal_mode_clears_filter_on_library_and_goes_back_on_search() {
+    fn esc_in_normal_mode_clears_filter_on_library_and_goes_back_on_search_or_detail() {
         let mut pending = PendingInput::default();
         assert_eq!(
             map_key(&Screen::Library, &Mode::Normal, &mut pending, key_code(KeyCode::Esc)),
@@ -148,6 +151,27 @@ mod tests {
         assert_eq!(
             map_key(&Screen::Search, &Mode::Normal, &mut pending, key_code(KeyCode::Esc)),
             Some(Action::Back)
+        );
+        assert_eq!(
+            map_key(&Screen::Detail, &Mode::Normal, &mut pending, key_code(KeyCode::Esc)),
+            Some(Action::Back)
+        );
+    }
+
+    #[test]
+    fn enter_and_l_open_detail_on_search_screen_only() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(&Screen::Search, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
+            Some(Action::OpenDetail)
+        );
+        assert_eq!(
+            map_key(&Screen::Search, &Mode::Normal, &mut pending, key('l')),
+            Some(Action::OpenDetail)
+        );
+        assert_eq!(
+            map_key(&Screen::Library, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
+            None
         );
     }
 

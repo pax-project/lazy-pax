@@ -81,6 +81,21 @@ impl SearchScreen {
         }
     }
 
+    /// The currently-highlighted candidate and whether it's already
+    /// declared in the library, for opening a detail view on it.
+    pub fn selected_candidate(&self) -> Option<(CandidateWork, bool)> {
+        let (results, known_dois) = match &self.state {
+            SearchState::Loaded { results, known_dois } => (results, known_dois),
+            _ => return None,
+        };
+        let work = flatten(results).get(self.selected).cloned()?;
+        let in_library = work
+            .doi
+            .as_deref()
+            .is_some_and(|d| known_dois.contains(pax_core::normalize_doi(d)));
+        Some((work, in_library))
+    }
+
     pub fn move_down(&mut self) {
         if let Some(items) = self.candidates().filter(|c| !c.is_empty()) {
             self.selected = (self.selected + 1) % items.len();
@@ -294,6 +309,28 @@ mod tests {
         assert!(matches!(screen.kind, SearchKind::Doi));
         screen.cycle_kind();
         assert!(matches!(screen.kind, SearchKind::Free));
+    }
+
+    #[test]
+    fn selected_candidate_reports_in_library_from_normalized_doi() {
+        let mut w = work(ProviderId::OpenAlex, "1", "A");
+        w.doi = Some("https://doi.org/10.1145/foo".to_string());
+        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> = HashMap::new();
+        results.insert(ProviderId::OpenAlex, Ok(vec![w]));
+        let mut known_dois = HashSet::new();
+        known_dois.insert("10.1145/foo".to_string());
+        let screen = SearchScreen {
+            state: SearchState::Loaded { results, known_dois },
+            ..Default::default()
+        };
+        let (candidate, in_library) = screen.selected_candidate().unwrap();
+        assert_eq!(candidate.title, "A");
+        assert!(in_library);
+    }
+
+    #[test]
+    fn selected_candidate_is_none_before_a_search_completes() {
+        assert!(SearchScreen::default().selected_candidate().is_none());
     }
 
     #[test]

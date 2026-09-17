@@ -18,4 +18,5 @@ pub enum Action {
     GoToSearch,
     Back,
     CycleSearchMode,
+    OpenDetail,
 }

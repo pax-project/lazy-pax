@@ -56,8 +56,9 @@ reopens an item — it should stay accurate rather than aspirational.
 
 ### Paper detail view
 
-- [ ] Full detail for an unresolved search result (abstract, PDF sources,
-      in-library status) before adding
+- [x] Full detail for an unresolved search result (abstract, PDF sources,
+      in-library status) before adding — mirrors the `pax` CLI's own `show`
+      field set/wording so a paper reads the same in both places
 - [ ] Full detail for a declared paper (identity, artifact status + hash,
       citation key, tags, notes)
 
@@ -188,7 +189,16 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       "actor model", author "Hewitt", and DOI
       10.1112/plms/s2-42.1.230 — plus Esc-back-to-Library after a real
       search.
-- [ ] 5. Detail view for a `CandidateWork`
+- [x] 5. Detail view for a `CandidateWork` — new `Screen::Detail`, reached
+      via `Enter`/`l` on a Search result (no new job: the candidate is
+      already in memory from the search). Introduced `screen_stack` +
+      `push_screen`/`go_back` for general back-navigation, since `Esc` from
+      Detail needs to return to Search specifically, not always Library —
+      Library → Search → Detail → back → back now unwinds correctly. Field
+      set/wording mirrors `pax show`'s own candidate display. Verified:
+      clean build/clippy, 52 unit tests pass (up from 42); ran the full
+      Library → Search (live "actor model" query) → Detail → back → back →
+      quit path end-to-end with a clean exit, no panics.
 - [ ] 6. Add flow (`JobKind::AddCandidate`)
 - [ ] 7. Detail view for a declared `Paper`
 - [ ] 8. Fetch + Open (suspend/resume bracket + `resolve_for_open`)
@@ -200,12 +210,13 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
 
 ## Critical path
 
-Steps 1–4 of the build order are done (see above) — `lazypax` now has two
-working screens (Library, Search), live provider search in all three modes,
-and the vim-style Insert-mode machinery every later text field reuses. Worth
-remembering for later steps: `job::spawn_search`'s dedicated-OS-thread
-pattern (not `tokio::spawn`) is required for *any* future job that awaits a
-`pax_core` async fn touching Crossref — that includes `resolve_candidate`,
-`add_candidate` (step 6), and `show_reference` (step 5/7), not just search.
-Next: step 5, a detail view for an unresolved `CandidateWork` (no new job
-needed — it's pure state/rendering over data already fetched by search).
+Steps 1–5 of the build order are done (see above) — `lazypax` now has three
+working screens (Library, Search, Detail) with proper stack-based back
+navigation, live provider search in all three modes, and the vim-style
+Insert-mode machinery every later text field reuses. Worth remembering for
+later steps: `job::spawn_search`'s dedicated-OS-thread pattern (not
+`tokio::spawn`) is required for *any* future job that awaits a `pax_core`
+async fn touching Crossref — that includes `resolve_candidate`,
+`add_candidate` (step 6), and `show_reference` (step 7), not just search.
+Next: step 6, the add flow (`JobKind::AddCandidate`) — a single keypress
+from the candidate Detail screen, per the resolved "no confirmation" call.

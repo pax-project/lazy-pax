@@ -7,14 +7,17 @@ use crate::action::Action;
 use crate::job::{JobKind, JobOutcome};
 use crate::message::{Effect, Message};
 use crate::status::StatusBar;
+use crate::ui::detail::{DetailScreen, DetailSubject};
 use crate::ui::library::{LibraryScreen, LibraryState};
 use crate::ui::search::{SearchKind, SearchScreen, SearchState};
 
 /// Which top-level view is showing. Gains a variant per screen as each one
 /// is built (see docs/status.md's build order).
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Library,
     Search,
+    Detail,
 }
 
 /// Normal (navigation) vs. text-entry input. `Insert` carries which field
@@ -40,25 +43,42 @@ pub struct PendingInput {
 
 pub struct App {
     pub screen: Screen,
+    pub screen_stack: Vec<Screen>,
     pub mode: Mode,
     pub should_quit: bool,
     pub pending: PendingInput,
     pub status: StatusBar,
     pub library: LibraryScreen,
     pub search: SearchScreen,
+    pub detail: DetailScreen,
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
             screen: Screen::Library,
+            screen_stack: Vec::new(),
             mode: Mode::Normal,
             should_quit: false,
             pending: PendingInput::default(),
             status: StatusBar::default(),
             library: LibraryScreen::default(),
             search: SearchScreen::default(),
+            detail: DetailScreen::default(),
         }
+    }
+
+    /// Navigates to `screen`, remembering the current one so `go_back` can
+    /// return to it.
+    fn push_screen(&mut self, screen: Screen) {
+        self.screen_stack.push(self.screen);
+        self.screen = screen;
+    }
+
+    /// Returns to whichever screen `push_screen` was last called from;
+    /// Library if the stack is already empty (there's nowhere further back).
+    fn go_back(&mut self) {
+        self.screen = self.screen_stack.pop().unwrap_or(Screen::Library);
     }
 
     /// Effects to run once, before the event loop starts.
@@ -130,17 +150,26 @@ impl App {
                 Vec::new()
             }
             Action::GoToSearch => {
-                self.screen = Screen::Search;
+                self.push_screen(Screen::Search);
                 self.search.begin_query_edit();
                 self.mode = Mode::Insert(InsertTarget::SearchQuery);
                 Vec::new()
             }
             Action::Back => {
-                self.screen = Screen::Library;
+                self.go_back();
                 Vec::new()
             }
             Action::CycleSearchMode => {
                 self.search.cycle_kind();
+                Vec::new()
+            }
+            Action::OpenDetail => {
+                if self.screen == Screen::Search
+                    && let Some((work, in_library)) = self.search.selected_candidate()
+                {
+                    self.detail.subject = Some(DetailSubject::Candidate { work, in_library });
+                    self.push_screen(Screen::Detail);
+                }
                 Vec::new()
             }
         }
@@ -150,6 +179,7 @@ impl App {
         match self.screen {
             Screen::Library => self.library.move_down(),
             Screen::Search => self.search.move_down(),
+            Screen::Detail => {}
         }
     }
 
@@ -157,6 +187,7 @@ impl App {
         match self.screen {
             Screen::Library => self.library.move_up(),
             Screen::Search => self.search.move_up(),
+            Screen::Detail => {}
         }
     }
 
@@ -164,6 +195,7 @@ impl App {
         match self.screen {
             Screen::Library => self.library.go_top(),
             Screen::Search => self.search.go_top(),
+            Screen::Detail => {}
         }
     }
 
@@ -171,6 +203,7 @@ impl App {
         match self.screen {
             Screen::Library => self.library.go_bottom(),
             Screen::Search => self.search.go_bottom(),
+            Screen::Detail => {}
         }
     }
 
@@ -409,6 +442,76 @@ mod tests {
         }
         let effects = app.apply(Action::SubmitInput);
         assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::SearchByAuthor(q))] if q == "hewitt"));
+    }
+
+    fn candidate_work() -> pax_core::CandidateWork {
+        pax_core::CandidateWork {
+            id: pax_core::CandidateId {
+                provider: pax_core::ProviderId::OpenAlex,
+                native_id: "W1".to_string(),
+            },
+            title: "On Computable Numbers".to_string(),
+            authors: vec!["Alan Turing".to_string()],
+            publish_date: "1936".to_string(),
+            doi: None,
+            pdf_url: None,
+            venue: None,
+            abstract_text: None,
+        }
+    }
+
+    fn with_search_results() -> App {
+        use std::collections::{HashMap, HashSet};
+        let mut app = App::new();
+        let mut results = HashMap::new();
+        results.insert(pax_core::ProviderId::OpenAlex, Ok(vec![candidate_work()]));
+        app.update(Message::Job(
+            1,
+            JobOutcome::Searched {
+                results,
+                known_dois: HashSet::new(),
+            },
+        ));
+        app
+    }
+
+    #[test]
+    fn open_detail_from_search_pushes_the_selected_candidate() {
+        let mut app = with_search_results();
+        app.screen = Screen::Search;
+        app.apply(Action::OpenDetail);
+        assert!(matches!(app.screen, Screen::Detail));
+        assert!(matches!(
+            app.detail.subject,
+            Some(DetailSubject::Candidate { ref work, .. }) if work.title == "On Computable Numbers"
+        ));
+    }
+
+    #[test]
+    fn open_detail_is_a_no_op_outside_search() {
+        let mut app = App::new();
+        app.apply(Action::OpenDetail);
+        assert!(matches!(app.screen, Screen::Library));
+        assert!(app.detail.subject.is_none());
+    }
+
+    #[test]
+    fn back_from_detail_returns_to_search_not_library() {
+        let mut app = with_search_results();
+        app.apply(Action::GoToSearch); // Library -> Search (pushes Library)
+        app.apply(Action::OpenDetail); // Search -> Detail (pushes Search)
+        assert!(matches!(app.screen, Screen::Detail));
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Search));
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Library));
+    }
+
+    #[test]
+    fn back_with_an_empty_stack_stays_on_library() {
+        let mut app = App::new();
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Library));
     }
 
     #[test]
