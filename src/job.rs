@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use pax_core::{CandidateId, CandidateWork, PaxError, PaperRef, ProviderError, ProviderId};
+use pax_core::{CandidateId, CandidateWork, FetchOutcome, PaxError, PaperRef, ProviderError, ProviderId, ResolvedArtifact};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::message::Message;
@@ -21,6 +21,8 @@ pub enum JobKind {
     SearchByAuthor(String),
     SearchByDoi(String),
     AddCandidate(CandidateId),
+    FetchPaper(String),
+    ResolveForOpen(String),
 }
 
 pub enum JobOutcome {
@@ -30,6 +32,42 @@ pub enum JobOutcome {
         known_dois: std::collections::HashSet<String>,
     },
     Added(Result<PaperRef, PaxError>),
+    Fetched {
+        citation_key: String,
+        result: Result<FetchOutcome, PaxError>,
+    },
+    ReadyToOpen {
+        citation_key: String,
+        result: Result<PathBuf, OpenError>,
+    },
+}
+
+/// Why a declared paper couldn't be resolved to an openable path. Mirrors
+/// the `pax open` CLI's own error cases (`src/bin/pax/main.rs`'s
+/// `Command::Open` arm).
+pub enum OpenError {
+    Pax(PaxError),
+    NoSourceUrl(String),
+    StillNotFetched,
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::Pax(e) => write!(f, "{e}"),
+            OpenError::NoSourceUrl(key) => write!(
+                f,
+                "{key:?} has no PDF source recorded — the provider found no open-access copy when it was added, so there's nothing to fetch"
+            ),
+            OpenError::StillNotFetched => write!(f, "fetched, but the artifact still couldn't be resolved"),
+        }
+    }
+}
+
+impl From<PaxError> for OpenError {
+    fn from(e: PaxError) -> Self {
+        OpenError::Pax(e)
+    }
 }
 
 pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>) {
@@ -43,7 +81,32 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let _ = tx.send(Message::Job(id, JobOutcome::Library(result)));
             });
         }
-        network_kind => spawn_network(id, network_kind, ctx, tx),
+        JobKind::FetchPaper(citation_key) => {
+            tokio::spawn(async move {
+                let root = ctx.root.clone();
+                let key = citation_key.clone();
+                let result = tokio::task::spawn_blocking(move || pax_core::fetch_paper(&key, &root))
+                    .await
+                    .expect("fetch_paper task panicked");
+                let _ = tx.send(Message::Job(id, JobOutcome::Fetched { citation_key, result }));
+            });
+        }
+        JobKind::ResolveForOpen(citation_key) => {
+            tokio::spawn(async move {
+                let root = ctx.root.clone();
+                let key = citation_key.clone();
+                let result = tokio::task::spawn_blocking(move || resolve_for_open(&key, &root))
+                    .await
+                    .expect("resolve_for_open task panicked");
+                let _ = tx.send(Message::Job(id, JobOutcome::ReadyToOpen { citation_key, result }));
+            });
+        }
+        network_kind @ (JobKind::SearchAll(_)
+        | JobKind::SearchByAuthor(_)
+        | JobKind::SearchByDoi(_)
+        | JobKind::AddCandidate(_)) => {
+            spawn_network(id, network_kind, ctx, tx);
+        }
     }
 }
 
@@ -52,9 +115,8 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
 /// futures can't run on `tokio::spawn`'s multi-threaded executor. Each such
 /// job gets its own OS thread with a small current-thread runtime instead:
 /// still fully off the main event loop's task, just not sharing its
-/// runtime. Applies to search today and `add_candidate` here; any future
-/// job awaiting `resolve_candidate`/`show_reference` needs the same
-/// treatment.
+/// runtime. Applies to search and `add_candidate` today; `show_reference`
+/// needs the same treatment if a future step calls it.
 fn spawn_network(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>) {
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -77,7 +139,9 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
             let result = pax_core::add_candidate(&candidate_id, &ctx.root, &ctx.config).await;
             JobOutcome::Added(result)
         }
-        JobKind::LoadLibrary => unreachable!("spawn_network is only called with network JobKinds"),
+        JobKind::LoadLibrary | JobKind::FetchPaper(_) | JobKind::ResolveForOpen(_) => {
+            unreachable!("spawn_network is only called with network JobKinds")
+        }
     }
 }
 
@@ -90,4 +154,25 @@ fn load_library(root: &Path) -> Result<Vec<pax_core::Paper>, PaxError> {
     let path = pax_core::nix::papers_path(root);
     let library = pax_core::Library::load(&path)?;
     Ok(library.papers().to_vec())
+}
+
+/// Mirrors `pax open`'s own resolve -> fetch-if-needed -> resolve sequence
+/// exactly (`src/bin/pax/main.rs`'s `Command::Open` arm), so lazypax's
+/// "open" produces the same artifact-resolution behavior as the CLI: a
+/// not-yet-fetched paper is fetched automatically and silently, without an
+/// interactive prompt.
+fn resolve_for_open(citation_key: &str, root: &Path) -> Result<PathBuf, OpenError> {
+    use ResolvedArtifact::*;
+    let resolved = match pax_core::resolve_artifact_path(citation_key, root)? {
+        NotFetched => {
+            pax_core::fetch_paper(citation_key, root)?;
+            pax_core::resolve_artifact_path(citation_key, root)?
+        }
+        other => other,
+    };
+    match resolved {
+        Path(p) => Ok(p),
+        NoSourceUrl => Err(OpenError::NoSourceUrl(citation_key.to_string())),
+        NotFetched => Err(OpenError::StillNotFetched),
+    }
 }

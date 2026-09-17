@@ -1,7 +1,7 @@
 use std::io::ErrorKind;
 
 use crossterm::event::{Event, KeyEventKind};
-use pax_core::PaxError;
+use pax_core::{FetchOutcome, PaxError};
 
 use crate::action::Action;
 use crate::job::{JobKind, JobOutcome};
@@ -119,6 +119,7 @@ impl App {
             }
             Message::Input(_) => Vec::new(),
             Message::Job(_id, outcome) => self.apply_job_outcome(outcome),
+            Message::ViewerExited(citation_key, result) => self.apply_viewer_exit(citation_key, result),
         }
     }
 
@@ -199,6 +200,8 @@ impl App {
                 Vec::new()
             }
             Action::AddCandidate => self.add_selected_candidate(),
+            Action::Fetch => self.fetch_selected(),
+            Action::Open => self.open_selected(),
         }
     }
 
@@ -214,6 +217,52 @@ impl App {
             return Vec::new();
         }
         vec![Effect::Spawn(JobKind::AddCandidate(candidate_id))]
+    }
+
+    /// The declared paper the current screen has selected — the Library's
+    /// highlighted row, or the paper a Detail view is showing (`None` for a
+    /// candidate detail, which isn't fetchable/openable). Shared by
+    /// fetch/open, which are reachable from either screen.
+    fn selected_declared_key(&self) -> Option<String> {
+        match self.screen {
+            Screen::Library => self.library.selected_paper().map(|p| p.local.citation_key),
+            Screen::Detail => match &self.detail.subject {
+                Some(DetailSubject::Declared(paper)) => Some(paper.local.citation_key.clone()),
+                _ => None,
+            },
+            Screen::Search => None,
+        }
+    }
+
+    fn fetch_selected(&mut self) -> Vec<Effect> {
+        let Some(citation_key) = self.selected_declared_key() else {
+            return Vec::new();
+        };
+        if !self.start_job() {
+            return Vec::new();
+        }
+        self.status.pending(format!("Fetching {citation_key}…"));
+        vec![Effect::Spawn(JobKind::FetchPaper(citation_key))]
+    }
+
+    fn open_selected(&mut self) -> Vec<Effect> {
+        let Some(citation_key) = self.selected_declared_key() else {
+            return Vec::new();
+        };
+        if !self.start_job() {
+            return Vec::new();
+        }
+        self.status.pending(format!("Opening {citation_key}…"));
+        vec![Effect::Spawn(JobKind::ResolveForOpen(citation_key))]
+    }
+
+    fn apply_viewer_exit(&mut self, citation_key: String, result: std::io::Result<std::process::ExitStatus>) -> Vec<Effect> {
+        match result {
+            Ok(status) if status.success() => self.status.message = None,
+            Ok(status) => self.status.error(format!("{citation_key}: viewer exited with {status}")),
+            Err(e) => self.status.error(format!("{citation_key}: failed to launch viewer: {e}")),
+        }
+        Vec::new()
     }
 
     fn move_down(&mut self) {
@@ -325,6 +374,38 @@ impl App {
             JobOutcome::Added(Err(e)) => {
                 self.status.error(e.to_string());
             }
+            JobOutcome::Fetched { citation_key, result } => match result {
+                Ok(outcome) => {
+                    let hash = match &outcome {
+                        FetchOutcome::AlreadyFetched { hash } | FetchOutcome::Fetched { hash } => hash.clone(),
+                    };
+                    self.status.success(match &outcome {
+                        FetchOutcome::Fetched { .. } => format!("Fetched {citation_key} (hash {hash})"),
+                        FetchOutcome::AlreadyFetched { .. } => format!("{citation_key} already fetched"),
+                    });
+                    // Only patch the Detail screen's own copy if it's still
+                    // showing the same paper — the user may have navigated
+                    // to a different one while this job was in flight.
+                    if let Some(DetailSubject::Declared(paper)) = &mut self.detail.subject
+                        && paper.local.citation_key == citation_key
+                    {
+                        paper.artifact.hash = Some(hash);
+                    }
+                    self.job_running = true;
+                    return vec![Effect::Spawn(JobKind::LoadLibrary)];
+                }
+                Err(e) => self.status.error(format!("{citation_key}: {e}")),
+            },
+            JobOutcome::ReadyToOpen { citation_key, result } => match result {
+                Ok(path) => {
+                    self.job_running = true;
+                    return vec![
+                        Effect::Spawn(JobKind::LoadLibrary),
+                        Effect::LaunchViewer { citation_key, path },
+                    ];
+                }
+                Err(e) => self.status.error(e.to_string()),
+            },
         }
         Vec::new()
     }
@@ -671,5 +752,165 @@ mod tests {
         ));
         assert!(effects.is_empty());
         assert!(!app.job_running);
+    }
+
+    #[test]
+    fn fetch_from_library_spawns_the_job_and_shows_pending() {
+        let mut app = with_two_papers();
+        app.library.selected = 0; // turing1936
+        let effects = app.apply(Action::Fetch);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::FetchPaper(key))] if key == "turing1936"
+        ));
+        assert!(app.job_running);
+        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+    }
+
+    #[test]
+    fn fetch_from_declared_detail_targets_the_paper_being_viewed() {
+        let mut app = with_two_papers();
+        app.library.selected = 1; // hewitt1973
+        app.apply(Action::OpenDetail);
+        let effects = app.apply(Action::Fetch);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::FetchPaper(key))] if key == "hewitt1973"
+        ));
+    }
+
+    #[test]
+    fn fetch_and_open_are_no_ops_on_search_and_candidate_detail() {
+        let mut app = on_candidate_detail();
+        assert!(app.apply(Action::Fetch).is_empty());
+        assert!(app.apply(Action::Open).is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn successful_fetch_updates_status_patches_matching_detail_and_reloads() {
+        let mut app = with_two_papers();
+        app.library.selected = 0; // turing1936
+        app.apply(Action::OpenDetail);
+        app.apply(Action::Fetch);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Fetched {
+                citation_key: "turing1936".to_string(),
+                result: Ok(FetchOutcome::Fetched {
+                    hash: "sha256-abc".to_string(),
+                }),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Success, msg)) if msg.contains("turing1936")
+        ));
+        assert!(matches!(
+            app.detail.subject,
+            Some(DetailSubject::Declared(ref p)) if p.artifact.hash.as_deref() == Some("sha256-abc")
+        ));
+        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn fetch_outcome_does_not_patch_detail_if_the_user_navigated_to_a_different_paper() {
+        // Regression test: fetch was triggered for turing1936, but the user
+        // has since opened hewitt1973's detail. The stale outcome must not
+        // overwrite hewitt1973's artifact hash.
+        let mut app = with_two_papers();
+        app.library.selected = 1; // hewitt1973, viewed after the fetch was dispatched
+        app.apply(Action::OpenDetail);
+        app.update(Message::Job(
+            2,
+            JobOutcome::Fetched {
+                citation_key: "turing1936".to_string(),
+                result: Ok(FetchOutcome::Fetched {
+                    hash: "sha256-abc".to_string(),
+                }),
+            },
+        ));
+        assert!(matches!(
+            app.detail.subject,
+            Some(DetailSubject::Declared(ref p)) if p.local.citation_key == "hewitt1973" && p.artifact.hash.is_none()
+        ));
+    }
+
+    #[test]
+    fn failed_fetch_shows_an_error() {
+        let mut app = with_two_papers();
+        app.apply(Action::Fetch);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Fetched {
+                citation_key: "turing1936".to_string(),
+                result: Err(PaxError::NoSourceUrl("turing1936".to_string())),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn successful_open_reloads_and_launches_the_viewer() {
+        let mut app = with_two_papers();
+        app.apply(Action::Open);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::ReadyToOpen {
+                citation_key: "turing1936".to_string(),
+                result: Ok(std::path::PathBuf::from("/nix/store/xyz-turing.pdf")),
+            },
+        ));
+        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary), Effect::LaunchViewer { .. }]));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn failed_open_shows_an_error_and_does_not_launch_anything() {
+        let mut app = with_two_papers();
+        app.apply(Action::Open);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::ReadyToOpen {
+                citation_key: "turing1936".to_string(),
+                result: Err(crate::job::OpenError::NoSourceUrl("turing1936".to_string())),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn viewer_exiting_successfully_clears_the_status_message() {
+        let mut app = App::new();
+        app.status.pending("Opening turing1936…");
+        app.update(Message::ViewerExited(
+            "turing1936".to_string(),
+            Ok(std::os::unix::process::ExitStatusExt::from_raw(0)),
+        ));
+        assert!(app.status.message.is_none());
+    }
+
+    #[test]
+    fn viewer_failing_to_launch_shows_an_error() {
+        let mut app = App::new();
+        app.update(Message::ViewerExited(
+            "turing1936".to_string(),
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such viewer")),
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg)) if msg.contains("turing1936")
+        ));
     }
 }

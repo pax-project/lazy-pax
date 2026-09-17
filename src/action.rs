@@ -20,4 +20,6 @@ pub enum Action {
     CycleSearchMode,
     OpenDetail,
     AddCandidate,
+    Fetch,
+    Open,
 }

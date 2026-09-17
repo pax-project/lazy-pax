@@ -50,14 +50,29 @@ fn handle_effect(
     ctx: &PaxCtx,
     tx: &mpsc::UnboundedSender<Message>,
     next_job_id: &mut JobId,
-) {
+    terminal: &mut TerminalGuard,
+    app: &mut App,
+) -> io::Result<()> {
     match effect {
         Effect::Quit => {}
         Effect::Spawn(kind) => {
             *next_job_id += 1;
             job::spawn(*next_job_id, kind, ctx.clone(), tx.clone());
         }
+        Effect::LaunchViewer { citation_key, path } => {
+            let viewer = std::env::var("PAX_PDF_VIEWER").unwrap_or_else(|_| "xdg-open".to_string());
+            terminal.suspend()?;
+            let result = std::process::Command::new(&viewer).arg(&path).status();
+            terminal.resume()?;
+            // Fed back into update() directly, in the same tick — this
+            // already happened synchronously, no need to round-trip it
+            // through the channel like a background job's result.
+            for effect in app.update(Message::ViewerExited(citation_key, result)) {
+                handle_effect(effect, ctx, tx, next_job_id, terminal, app)?;
+            }
+        }
     }
+    Ok(())
 }
 
 #[tokio::main]
@@ -73,7 +88,7 @@ async fn main() -> io::Result<()> {
     let mut app = App::new();
 
     for effect in app.init_effects() {
-        handle_effect(effect, &ctx, &tx, &mut next_job_id);
+        handle_effect(effect, &ctx, &tx, &mut next_job_id, &mut terminal_guard, &mut app)?;
     }
 
     let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -85,7 +100,7 @@ async fn main() -> io::Result<()> {
         };
 
         for effect in app.update(msg) {
-            handle_effect(effect, &ctx, &tx, &mut next_job_id);
+            handle_effect(effect, &ctx, &tx, &mut next_job_id, &mut terminal_guard, &mut app)?;
         }
 
         terminal_guard.terminal.draw(|frame| ui::draw(frame, &app))?;

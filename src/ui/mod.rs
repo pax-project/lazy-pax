@@ -32,6 +32,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let color = match kind {
             StatusKind::Error => Color::Red,
             StatusKind::Success => Color::Green,
+            StatusKind::Pending => Color::Yellow,
         };
         (msg.clone(), Style::default().fg(color))
     } else {
@@ -48,11 +49,11 @@ fn hint_text(app: &App) -> String {
             }
             _ if !app.library.query.is_empty() => {
                 format!(
-                    "Filter: {}  (Enter/l: view, /: edit, Esc: clear, S: search, q: quit)",
+                    "Filter: {}  (Enter/l, f: fetch, o: open, /: edit, Esc: clear, S: search, q: quit)",
                     app.library.query
                 )
             }
-            _ => "Enter/l: view  /: filter  S: search  q: quit".to_string(),
+            _ => "Enter/l: view  f: fetch  o: open  /: filter  S: search  q: quit".to_string(),
         },
         Screen::Search => "Enter/l: view  Esc: back  q: quit".to_string(),
         Screen::Detail => match &app.detail.subject {
@@ -60,7 +61,8 @@ fn hint_text(app: &App) -> String {
                 "a: add anyway (already in library)  Esc: back  q: quit".to_string()
             }
             Some(DetailSubject::Candidate { in_library: false, .. }) => "a: add  Esc: back  q: quit".to_string(),
-            Some(DetailSubject::Declared(_)) | None => "Esc: back  q: quit".to_string(),
+            Some(DetailSubject::Declared(_)) => "f: fetch  o: open  Esc: back  q: quit".to_string(),
+            None => "Esc: back  q: quit".to_string(),
         },
     }
 }

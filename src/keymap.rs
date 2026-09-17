@@ -53,6 +53,8 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
             Some(Action::OpenDetail)
         }
         KeyCode::Char('a') if matches!(screen, Screen::Detail) => Some(Action::AddCandidate),
+        KeyCode::Char('f') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::Fetch),
+        KeyCode::Char('o') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::Open),
         _ => None,
     }
 }
@@ -221,6 +223,17 @@ mod tests {
             Some(Action::AddCandidate)
         );
         assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('a')), None);
+    }
+
+    #[test]
+    fn f_and_o_fetch_and_open_on_library_and_detail_but_not_search() {
+        let mut pending = PendingInput::default();
+        for screen in [Screen::Library, Screen::Detail] {
+            assert_eq!(map_key(&screen, &Mode::Normal, &mut pending, key('f')), Some(Action::Fetch));
+            assert_eq!(map_key(&screen, &Mode::Normal, &mut pending, key('o')), Some(Action::Open));
+        }
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('f')), None);
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('o')), None);
     }
 
     #[test]

@@ -78,10 +78,15 @@ reopens an item — it should stay accurate rather than aspirational.
 
 ### Fetch / open
 
-- [ ] Fetch a declared paper with visible pending/progress state
-- [ ] Open launches configured viewer, auto-fetching first if needed
-- [ ] `pax-core` errors (no source URL, viewer launch failure) surfaced to
-      the user
+- [x] Fetch a declared paper with visible pending/progress state (`f` on
+      Library or Detail(Declared); new `StatusKind::Pending`, shown from the
+      moment the job is dispatched, not just once it resolves)
+- [x] Open launches configured viewer, auto-fetching first if needed (`o`;
+      `JobKind::ResolveForOpen` mirrors `pax open`'s own resolve ->
+      fetch-if-`NotFetched` -> resolve sequence exactly)
+- [x] `pax-core` errors (no source URL, viewer launch failure) surfaced to
+      the user (`OpenError` display text, and `Message::ViewerExited`'s
+      non-zero-exit/launch-failure cases, both routed through the status bar)
 
 ### Edit
 
@@ -246,7 +251,59 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       `Enter` and `l`) → back → quit end-to-end against a two-paper fixture
       with a clean exit and no panics (pure local state, so unaffected by
       step 6's `script`-pty network-job caveat).
-- [ ] 8. Fetch + Open (suspend/resume bracket + `resolve_for_open`)
+- [x] 8. Fetch + Open (suspend/resume bracket + `resolve_for_open`) — `f`/`o`
+      on Library or Detail(Declared) spawn `JobKind::FetchPaper`/
+      `ResolveForOpen`, both plain sync `pax_core` calls that shell out to
+      `nix`, so they use the original `tokio::spawn` + `spawn_blocking`
+      pattern (not `spawn_network` — they don't touch Crossref). A
+      successful fetch patches the in-memory `Declared` detail's hash
+      *only if its citation key still matches* (the user may have
+      navigated to a different paper while the job was in flight — a real
+      bug this test caught, not a hypothetical) and chains a `LoadLibrary`
+      reload; a successful open does the same reload plus
+      `Effect::LaunchViewer`. `TerminalGuard` gained `suspend()`/`resume()`;
+      `main.rs`'s `handle_effect` now suspends, runs
+      `Command::new(viewer).arg(path).status()` in the foreground, resumes,
+      and feeds the result back through `update()` in the same tick via
+      `Message::ViewerExited` — no channel round-trip needed for something
+      that already happened synchronously.
+      **Two real, unplanned findings from verification — one a genuine bug
+      fixed, one a test-harness limit documented:**
+      1. **Bug, fixed**: `resume()` originally called `Terminal::clear()`,
+         which saves/restores the cursor position via a DSR query
+         (`ESC[6n`) round-tripped through the terminal — and reproducibly
+         failed here with `"the cursor position could not be read within a
+         normal duration"`, killing the whole process (exit 1) right after
+         a real, successful `nix build` and viewer launch. Fixed by using
+         `Terminal::resize(current_size)` instead: confirmed in ratatui's
+         own source that the fullscreen-viewport branch never reads cursor
+         position at all, while still doing the same full clear + buffer
+         reset. This isn't `script`-specific — a DSR query can stall under
+         other pty/multiplexer setups too — so it's a real fix, not a
+         workaround for the test environment.
+      2. **Test-harness limit, not a code defect**: with that fix in place,
+         a *single* `f` or a *single* `o` per `script` session works
+         reliably (confirmed repeatedly, including a real `nix store
+         prefetch-file` + `nix build` + stub-viewer invocation with a
+         correct resolved path), but `f` immediately followed by `o` in the
+         *same* session silently fails to launch the viewer — no crash, no
+         printed error, `papers.nix` still gets the correct hash from the
+         fetch. Isolated with the same standalone-diagnostic technique from
+         step 6: driving `job::spawn`'s `FetchPaper` then `ResolveForOpen`
+         directly (no pty at all) completes both correctly and quickly,
+         confirming the job logic itself is sound. This is the same
+         "two sequential subprocess/network jobs in one `script` session"
+         pattern step 6 hit with search-then-add, just for a different job
+         pair — a `script` limitation, not specific to Crossref/`!Send`
+         this time, since `FetchPaper`/`ResolveForOpen` use plain
+         `spawn_blocking`, not the dedicated-thread network pattern.
+      Verified: clean build/clippy, 77 unit tests pass (up from 66,
+      covering the guard, both success/failure paths for both jobs, the
+      citation-key-mismatch protection, and `ViewerExited`'s two outcomes);
+      real end-to-end runs against actual `research/` fixtures (built from
+      `pax`'s own templates, git-tracked as `nix build` requires) with a
+      real small HTTP URL — `nix store prefetch-file` and `nix build` both
+      genuinely ran and produced correct, verifiable results on disk.
 - [ ] 9. Edit (tags/notes, then rename + identity corrections)
 - [ ] 10. Remove (via `ConfirmPrompt` overlay)
 - [ ] 11. Sync/Check (shared `reports.rs` rendering)
@@ -255,17 +312,23 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
 
 ## Critical path
 
-Steps 1–7 of the build order are done (see above) — `lazypax` can search,
-inspect (both unresolved candidates and declared papers), and declare
-papers end-to-end. `Screen::Detail` now serves two subjects
-(`Candidate`/`Declared`) through one screen, reached from either Search or
-Library — worth keeping in mind for step 8 (Fetch/Open), which is also
-triggered from a paper's detail view and needs to know which subject it's
-looking at (only `Declared` papers are fetchable/openable). Reminders
-carried over: `job::spawn_network`'s dedicated-thread pattern is required
-for any job awaiting a `pax_core` async fn touching Crossref
-(`show_reference`, when a future step needs it); `App::job_running`'s guard
-is general-purpose — route any new job-triggering action through
-`start_job()`. Next: step 8, Fetch + Open — the first step that shells out
-to `nix` itself, and the first to need the terminal suspend/resume bracket
-around the external PDF viewer.
+Steps 1–8 of the build order are done (see above) — `lazypax` can search,
+inspect, declare, fetch, and open papers end-to-end, verified against real
+`nix` calls (not just against fixtures). Two things worth carrying forward:
+
+- **The DSR cursor-query fix in `TerminalGuard::resume()` is a real,
+  general-purpose fix** (use `resize()`, not `clear()`), not a
+  `script`-specific workaround — keep this in mind for any future place
+  that might call `Terminal::clear()` directly.
+- **This sandbox's `script`-based pty testing reliably fails on two
+  sequential subprocess/network-touching jobs run in one session**
+  (confirmed twice now: search-then-add in step 6, fetch-then-open here) —
+  always cross-check a suspicious multi-job pty failure against the
+  standalone-diagnostic technique (driving `job::spawn` directly, no pty)
+  before assuming a code defect. A single job per session, or the
+  diagnostic binary, are the two verification paths that reliably work
+  here.
+
+Next: step 9, Edit — tags/notes first (using the existing Insert-mode
+machinery), then citation-key rename and identity corrections via the same
+`PaperEdits` accumulator.
