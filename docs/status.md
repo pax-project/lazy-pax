@@ -64,9 +64,15 @@ reopens an item — it should stay accurate rather than aspirational.
 
 ### Add / declare
 
-- [ ] Add a search result as a single confirmable action
-- [ ] Success/failure shown in-place, no silent failure or crash
-- [ ] UI states explicitly that add declares without materializing the PDF
+- [x] Add a search result as a single confirmable action (`a` on the
+      candidate Detail screen, no y/n prompt — resolved as non-destructive/
+      reversible via remove)
+- [x] Success/failure shown in-place, no silent failure or crash (status
+      bar, green for success / red for error — new `StatusKind`); a
+      successful add auto-triggers a `LoadLibrary` reload so the Library
+      view is current when the user navigates back to it
+- [x] UI states explicitly that add declares without materializing the PDF
+      ("Added `<key>` — PDF not fetched yet")
 
 ### Fetch / open
 
@@ -199,7 +205,34 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       clean build/clippy, 52 unit tests pass (up from 42); ran the full
       Library → Search (live "actor model" query) → Detail → back → back →
       quit path end-to-end with a clean exit, no panics.
-- [ ] 6. Add flow (`JobKind::AddCandidate`)
+- [x] 6. Add flow (`JobKind::AddCandidate`) — `a` on the candidate Detail
+      screen spawns `add_candidate` via the same dedicated-thread pattern as
+      search (also touches Crossref, so also `!Send`). Added a minimal
+      `App::job_running` guard (`start_job()`): a second job-triggering
+      action pressed while one is in flight is rejected with a status
+      message instead of racing — concretely, double-pressing `a` before
+      the first `add_candidate` returns could otherwise declare the same
+      paper twice under two different citation keys, since each call
+      independently loads the library, generates a fresh key, and saves.
+      A successful add shows "Added `<key>` — PDF not fetched yet" (green)
+      and chains a `LoadLibrary` reload; a failure shows the `PaxError` in
+      red. Verified: clean build/clippy, 58 unit tests pass (up from 52,
+      covering the guard, both outcomes, and the reload chaining).
+      **Real, unplanned finding — a test-harness artifact, not a code
+      defect**: driving the full flow through `script`-wrapped ptys (this
+      sandbox's only available pty tool) reliably hangs on the *second*
+      sequential network job in one session (confirmed via tracing:
+      `add_candidate`'s dedicated thread starts and builds its runtime, but
+      `block_on` never returns). Isolated with a standalone diagnostic
+      binary built from the exact same `job.rs` — it reproduces the hang
+      under `script`, and reliably completes both a search *and* an add
+      (writing correctly to `papers.nix`) when run directly with no pty
+      wrapper, twice in a row. No other pty tool (`unbuffer`/`socat`/
+      `expect`/`python3`) is available here to double-check interactively.
+      Confidence instead rests on: the diagnostic proving the real `job.rs`
+      code path end-to-end outside `script`, and the 58 unit tests covering
+      `App`'s reaction to every outcome. Worth a real-terminal `cargo run`
+      sanity check on your end; flagging rather than papering over it.
 - [ ] 7. Detail view for a declared `Paper`
 - [ ] 8. Fetch + Open (suspend/resume bracket + `resolve_for_open`)
 - [ ] 9. Edit (tags/notes, then rename + identity corrections)
@@ -210,13 +243,15 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
 
 ## Critical path
 
-Steps 1–5 of the build order are done (see above) — `lazypax` now has three
-working screens (Library, Search, Detail) with proper stack-based back
-navigation, live provider search in all three modes, and the vim-style
-Insert-mode machinery every later text field reuses. Worth remembering for
-later steps: `job::spawn_search`'s dedicated-OS-thread pattern (not
-`tokio::spawn`) is required for *any* future job that awaits a `pax_core`
-async fn touching Crossref — that includes `resolve_candidate`,
-`add_candidate` (step 6), and `show_reference` (step 7), not just search.
-Next: step 6, the add flow (`JobKind::AddCandidate`) — a single keypress
-from the candidate Detail screen, per the resolved "no confirmation" call.
+Steps 1–6 of the build order are done (see above) — `lazypax` can now
+search, inspect, and declare papers end-to-end (verified against the real
+`job.rs` outside the pty test harness; see step 6's note on the `script`
+limitation encountered here). `job::spawn_network`'s dedicated-OS-thread
+pattern (renamed from `spawn_search` once `add_candidate` joined it) is
+required for *any* job awaiting a `pax_core` async fn touching Crossref —
+`show_reference` (step 7) will need it too. The `App::job_running` guard
+introduced in step 6 is general-purpose, not add-specific — any future
+job-triggering action (fetch, sync, check, ...) should route through
+`start_job()` the same way. Next: step 7, a detail view for a *declared*
+`Paper` (identity, artifact/fetch status, citation key, tags, notes) —
+reachable from the Library screen, no new job needed.

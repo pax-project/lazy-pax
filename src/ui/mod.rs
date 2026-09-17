@@ -8,6 +8,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::{App, InsertTarget, Mode, Screen};
+use crate::status::StatusKind;
+use crate::ui::detail::DetailSubject;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [content, status] =
@@ -26,8 +28,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let (text, style) = if let Some(msg) = &app.status.message {
-        (msg.clone(), Style::default().fg(Color::Red))
+    let (text, style) = if let Some((kind, msg)) = &app.status.message {
+        let color = match kind {
+            StatusKind::Error => Color::Red,
+            StatusKind::Success => Color::Green,
+        };
+        (msg.clone(), Style::default().fg(color))
     } else {
         (hint_text(app), Style::default())
     };
@@ -46,6 +52,12 @@ fn hint_text(app: &App) -> String {
             _ => "/: filter  S: search  q: quit".to_string(),
         },
         Screen::Search => "Enter/l: view  Esc: back  q: quit".to_string(),
-        Screen::Detail => "Esc: back  q: quit".to_string(),
+        Screen::Detail => match &app.detail.subject {
+            Some(DetailSubject::Candidate { in_library: true, .. }) => {
+                "a: add anyway (already in library)  Esc: back  q: quit".to_string()
+            }
+            Some(DetailSubject::Candidate { in_library: false, .. }) => "a: add  Esc: back  q: quit".to_string(),
+            None => "Esc: back  q: quit".to_string(),
+        },
     }
 }

@@ -48,6 +48,13 @@ pub struct App {
     pub should_quit: bool,
     pub pending: PendingInput,
     pub status: StatusBar,
+    /// Whether a background job is currently in flight. MVP keeps this to
+    /// one job at a time rather than a queue — a job-triggering action
+    /// pressed while this is true is rejected with a status message instead
+    /// of racing a second job against the first (e.g. double-pressing `a`
+    /// before `add_candidate` returns could otherwise declare the same
+    /// paper twice, under two different citation keys).
+    pub job_running: bool,
     pub library: LibraryScreen,
     pub search: SearchScreen,
     pub detail: DetailScreen,
@@ -62,10 +69,23 @@ impl App {
             should_quit: false,
             pending: PendingInput::default(),
             status: StatusBar::default(),
+            job_running: false,
             library: LibraryScreen::default(),
             search: SearchScreen::default(),
             detail: DetailScreen::default(),
         }
+    }
+
+    /// Rejects a job-triggering action while one is already in flight,
+    /// otherwise marks a job as now running. Call right before returning an
+    /// `Effect::Spawn` from an action handler.
+    fn start_job(&mut self) -> bool {
+        if self.job_running {
+            self.status.error("Busy — a job is already running");
+            return false;
+        }
+        self.job_running = true;
+        true
     }
 
     /// Navigates to `screen`, remembering the current one so `go_back` can
@@ -172,7 +192,22 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::AddCandidate => self.add_selected_candidate(),
         }
+    }
+
+    fn add_selected_candidate(&mut self) -> Vec<Effect> {
+        let Screen::Detail = self.screen else {
+            return Vec::new();
+        };
+        let Some(DetailSubject::Candidate { work, .. }) = &self.detail.subject else {
+            return Vec::new();
+        };
+        let candidate_id = work.id.clone();
+        if !self.start_job() {
+            return Vec::new();
+        }
+        vec![Effect::Spawn(JobKind::AddCandidate(candidate_id))]
     }
 
     fn move_down(&mut self) {
@@ -245,6 +280,9 @@ impl App {
         if query.is_empty() {
             return Vec::new();
         }
+        if !self.start_job() {
+            return Vec::new();
+        }
         self.search.state = SearchState::Loading;
         self.search.selected = 0;
         let job = match self.search.kind {
@@ -256,6 +294,7 @@ impl App {
     }
 
     fn apply_job_outcome(&mut self, outcome: JobOutcome) -> Vec<Effect> {
+        self.job_running = false;
         match outcome {
             JobOutcome::Library(Ok(papers)) => {
                 self.library.state = LibraryState::Loaded(papers);
@@ -270,6 +309,15 @@ impl App {
             JobOutcome::Searched { results, known_dois } => {
                 self.search.state = SearchState::Loaded { results, known_dois };
                 self.search.selected = 0;
+            }
+            JobOutcome::Added(Ok(paper_ref)) => {
+                self.status
+                    .success(format!("Added {} — PDF not fetched yet", paper_ref.0));
+                self.job_running = true;
+                return vec![Effect::Spawn(JobKind::LoadLibrary)];
+            }
+            JobOutcome::Added(Err(e)) => {
+                self.status.error(e.to_string());
             }
         }
         Vec::new()
@@ -528,5 +576,73 @@ mod tests {
         ));
         assert!(matches!(app.search.state, SearchState::Loaded { .. }));
         assert_eq!(app.search.selected, 0);
+    }
+
+    fn on_candidate_detail() -> App {
+        let mut app = with_search_results();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::OpenDetail);
+        app
+    }
+
+    #[test]
+    fn add_candidate_spawns_the_job_and_marks_one_in_flight() {
+        let mut app = on_candidate_detail();
+        let effects = app.apply(Action::AddCandidate);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::AddCandidate(id))] if id.native_id == "W1"
+        ));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn add_candidate_is_a_no_op_outside_detail() {
+        let mut app = with_search_results();
+        app.apply(Action::GoToSearch);
+        let effects = app.apply(Action::AddCandidate);
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn a_second_add_while_one_is_in_flight_is_rejected_with_a_status_message() {
+        let mut app = on_candidate_detail();
+        app.apply(Action::AddCandidate);
+        let effects = app.apply(Action::AddCandidate);
+        assert!(effects.is_empty());
+        assert!(app.status.message.is_some());
+    }
+
+    #[test]
+    fn successful_add_shows_success_and_triggers_a_library_reload() {
+        let mut app = on_candidate_detail();
+        app.apply(Action::AddCandidate);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Added(Ok(pax_core::PaperRef("turing1936".to_string()))),
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Success, msg)) if msg.contains("turing1936")
+        ));
+        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(app.job_running); // the follow-up reload is itself now in flight
+    }
+
+    #[test]
+    fn failed_add_shows_an_error_and_does_not_reload() {
+        let mut app = on_candidate_detail();
+        app.apply(Action::AddCandidate);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Added(Err(PaxError::NoSourceUrl("x".to_string()))),
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
     }
 }

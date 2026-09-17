@@ -19,4 +19,5 @@ pub enum Action {
     Back,
     CycleSearchMode,
     OpenDetail,
+    AddCandidate,
 }

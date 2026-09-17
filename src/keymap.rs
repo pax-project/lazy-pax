@@ -50,6 +50,7 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         KeyCode::Char('S') if matches!(screen, Screen::Library) => Some(Action::GoToSearch),
         KeyCode::Tab if matches!(screen, Screen::Search) => Some(Action::CycleSearchMode),
         KeyCode::Enter | KeyCode::Char('l') if matches!(screen, Screen::Search) => Some(Action::OpenDetail),
+        KeyCode::Char('a') if matches!(screen, Screen::Detail) => Some(Action::AddCandidate),
         _ => None,
     }
 }
@@ -206,6 +207,16 @@ mod tests {
             map_key(&Screen::Search, &mode, &mut pending, key_code(KeyCode::Tab)),
             Some(Action::CycleSearchMode)
         );
+    }
+
+    #[test]
+    fn a_adds_the_candidate_only_on_detail_screen() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(&Screen::Detail, &Mode::Normal, &mut pending, key('a')),
+            Some(Action::AddCandidate)
+        );
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('a')), None);
     }
 
     #[test]
