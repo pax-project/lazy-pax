@@ -31,6 +31,7 @@ pub enum JobKind {
     Sync,
     Check,
     ExportToFile { path: PathBuf, content: String },
+    Init,
 }
 
 pub enum JobOutcome {
@@ -62,6 +63,9 @@ pub enum JobOutcome {
         path: PathBuf,
         result: std::io::Result<()>,
     },
+    /// `pax_core::init_library`'s real return type — `std::io::Error`, not
+    /// `PaxError` (confirmed against its source, not assumed).
+    Initialized(std::io::Result<()>),
 }
 
 /// Why a declared paper couldn't be resolved to an openable path. Mirrors
@@ -170,6 +174,15 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let _ = tx.send(Message::Job(id, JobOutcome::Exported { path, result }));
             });
         }
+        JobKind::Init => {
+            tokio::spawn(async move {
+                let root = ctx.root.clone();
+                let result = tokio::task::spawn_blocking(move || pax_core::init_library(&root))
+                    .await
+                    .expect("init_library task panicked");
+                let _ = tx.send(Message::Job(id, JobOutcome::Initialized(result)));
+            });
+        }
         network_kind @ (JobKind::SearchAll(_)
         | JobKind::SearchByAuthor(_)
         | JobKind::SearchByDoi(_)
@@ -215,7 +228,8 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
         | JobKind::RemovePaper(_)
         | JobKind::Sync
         | JobKind::Check
-        | JobKind::ExportToFile { .. } => {
+        | JobKind::ExportToFile { .. }
+        | JobKind::Init => {
             unreachable!("spawn_network is only called with network JobKinds")
         }
     }

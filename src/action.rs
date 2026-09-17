@@ -34,4 +34,5 @@ pub enum Action {
     TriggerCheck,
     EnterExport,
     SaveExport,
+    TriggerInit,
 }

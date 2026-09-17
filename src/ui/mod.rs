@@ -13,6 +13,7 @@ use ratatui::Frame;
 use crate::app::{App, InsertTarget, Mode, Screen};
 use crate::status::StatusKind;
 use crate::ui::detail::DetailSubject;
+use crate::ui::library::LibraryState;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [content, status] =
@@ -72,6 +73,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 fn hint_text(app: &App) -> String {
     match app.screen {
+        Screen::Library if matches!(app.library.state, LibraryState::NotInitialized) => {
+            "i: initialize  q: quit".to_string()
+        }
         Screen::Library => match &app.mode {
             Mode::Insert(InsertTarget::LibraryFilter) => {
                 format!("Filter: {}▏  (Enter: apply, Esc: cancel)", app.library.filter_buffer)

@@ -82,6 +82,7 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         KeyCode::Char('s') if matches!(screen, Screen::Library) => Some(Action::TriggerSync),
         KeyCode::Char('c') if matches!(screen, Screen::Library) => Some(Action::TriggerCheck),
         KeyCode::Char('E') if matches!(screen, Screen::Library) => Some(Action::EnterExport),
+        KeyCode::Char('i') if matches!(screen, Screen::Library) => Some(Action::TriggerInit),
         KeyCode::Char('i') | KeyCode::Char('p') if matches!(screen, Screen::Export) => {
             Some(Action::EnterInsert(InsertTarget::ExportPath))
         }
@@ -392,6 +393,16 @@ mod tests {
         let mode = Mode::Insert(InsertTarget::ExportPath);
         let mut pending = PendingInput::default();
         assert_eq!(map_key(&Screen::Export, &mode, false, &mut pending, key('w')), Some(Action::InputChar('w')));
+    }
+
+    #[test]
+    fn i_triggers_init_only_from_library() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('i')),
+            Some(Action::TriggerInit)
+        );
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('i')), None);
     }
 
     #[test]

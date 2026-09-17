@@ -151,7 +151,7 @@ pub fn draw(frame: &mut Frame, screen: &LibraryScreen, area: Rect) {
         LibraryState::NotInitialized => render_message(
             frame,
             area,
-            "No pax library found here.\n\nRun `pax init` in this directory to create one.",
+            "No pax library found here.\n\nPress i to initialize one.",
         ),
         LibraryState::Loaded(papers) if papers.is_empty() => {
             render_message(frame, area, "Library is empty.\n\nSearch for papers to add them.")

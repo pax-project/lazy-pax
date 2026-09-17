@@ -295,7 +295,19 @@ impl App {
                 Vec::new()
             }
             Action::SaveExport => self.save_export(),
+            Action::TriggerInit => self.trigger_init(),
         }
+    }
+
+    fn trigger_init(&mut self) -> Vec<Effect> {
+        if !matches!(self.library.state, LibraryState::NotInitialized) {
+            return Vec::new();
+        }
+        if !self.start_job() {
+            return Vec::new();
+        }
+        self.status.pending("Initializing library…");
+        vec![Effect::Spawn(JobKind::Init)]
     }
 
     fn save_export(&mut self) -> Vec<Effect> {
@@ -655,6 +667,12 @@ impl App {
                 Ok(()) => self.status.success(format!("Exported to {}", path.display())),
                 Err(e) => self.status.error(format!("{}: {e}", path.display())),
             },
+            JobOutcome::Initialized(Ok(())) => {
+                self.status.success("Library initialized");
+                self.job_running = true;
+                return vec![Effect::Spawn(JobKind::LoadLibrary)];
+            }
+            JobOutcome::Initialized(Err(e)) => self.status.error(e.to_string()),
         }
         Vec::new()
     }
@@ -1635,5 +1653,58 @@ mod tests {
             &app.status.message,
             Some((crate::status::StatusKind::Error, msg)) if msg.contains("no-permission.bib")
         ));
+    }
+
+    fn not_initialized() -> App {
+        let mut app = App::new();
+        let io_err = std::io::Error::new(ErrorKind::NotFound, "no such file");
+        app.update(Message::Job(1, JobOutcome::Library(Err(PaxError::Io(io_err)))));
+        app
+    }
+
+    #[test]
+    fn trigger_init_spawns_the_job_only_when_not_initialized() {
+        let mut app = not_initialized();
+        let effects = app.apply(Action::TriggerInit);
+        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::Init)]));
+        assert!(app.job_running);
+        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+    }
+
+    #[test]
+    fn trigger_init_is_a_no_op_once_a_library_is_already_loaded() {
+        let mut app = with_two_papers();
+        let effects = app.apply(Action::TriggerInit);
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn successful_init_shows_success_and_reloads_the_library() {
+        let mut app = not_initialized();
+        app.apply(Action::TriggerInit);
+        let effects = app.update(Message::Job(2, JobOutcome::Initialized(Ok(()))));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Success, _))
+        ));
+        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn failed_init_shows_the_io_error() {
+        let mut app = not_initialized();
+        app.apply(Action::TriggerInit);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Initialized(Err(std::io::Error::new(ErrorKind::AlreadyExists, "research/ already exists"))),
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
     }
 }
