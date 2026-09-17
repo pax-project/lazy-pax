@@ -20,6 +20,8 @@ pub enum Screen {
     Search,
     Detail,
     Edit,
+    SyncReport,
+    CheckReport,
 }
 
 /// Normal (navigation) vs. text-entry input. `Insert` carries which field
@@ -78,6 +80,10 @@ pub struct App {
     pub search: SearchScreen,
     pub detail: DetailScreen,
     pub edit: EditScreen,
+    pub sync_report: Option<Vec<pax_core::SyncReport>>,
+    pub sync_selected: usize,
+    pub check_report: Option<Vec<pax_core::CheckReport>>,
+    pub check_selected: usize,
 }
 
 impl App {
@@ -95,6 +101,10 @@ impl App {
             search: SearchScreen::default(),
             detail: DetailScreen::default(),
             edit: EditScreen::default(),
+            sync_report: None,
+            sync_selected: 0,
+            check_report: None,
+            check_selected: 0,
         }
     }
 
@@ -214,7 +224,7 @@ impl App {
                         .selected_candidate()
                         .map(|(work, in_library)| DetailSubject::Candidate { work, in_library }),
                     Screen::Library => self.library.selected_paper().map(DetailSubject::Declared),
-                    Screen::Detail | Screen::Edit => None,
+                    Screen::Detail | Screen::Edit | Screen::SyncReport | Screen::CheckReport => None,
                 };
                 if let Some(subject) = subject {
                     self.detail.subject = Some(subject);
@@ -260,7 +270,23 @@ impl App {
                 self.confirm = None;
                 Vec::new()
             }
+            Action::TriggerSync => self.trigger_library_job(JobKind::Sync, "Syncing library…"),
+            Action::TriggerCheck => self.trigger_library_job(JobKind::Check, "Checking library…"),
         }
+    }
+
+    /// `Sync`/`Check` aren't scoped to a selected paper — they're always
+    /// reachable from Library regardless of selection, unlike
+    /// fetch/open/edit/remove.
+    fn trigger_library_job(&mut self, kind: JobKind, pending_message: &str) -> Vec<Effect> {
+        if self.screen != Screen::Library {
+            return Vec::new();
+        }
+        if !self.start_job() {
+            return Vec::new();
+        }
+        self.status.pending(pending_message);
+        vec![Effect::Spawn(kind)]
     }
 
     fn remove_selected(&mut self) -> Vec<Effect> {
@@ -298,7 +324,7 @@ impl App {
                 Some(DetailSubject::Declared(paper)) => Some(paper.clone()),
                 _ => None,
             },
-            Screen::Search | Screen::Edit => None,
+            Screen::Search | Screen::Edit | Screen::SyncReport | Screen::CheckReport => None,
         }
     }
 
@@ -362,6 +388,14 @@ impl App {
             Screen::Library => self.library.move_down(),
             Screen::Search => self.search.move_down(),
             Screen::Edit => self.edit.focus_next(),
+            Screen::SyncReport => {
+                let len = self.sync_report.as_ref().map_or(0, Vec::len);
+                move_index_down(&mut self.sync_selected, len);
+            }
+            Screen::CheckReport => {
+                let len = self.check_report.as_ref().map_or(0, Vec::len);
+                move_index_down(&mut self.check_selected, len);
+            }
             Screen::Detail => {}
         }
     }
@@ -371,6 +405,14 @@ impl App {
             Screen::Library => self.library.move_up(),
             Screen::Search => self.search.move_up(),
             Screen::Edit => self.edit.focus_prev(),
+            Screen::SyncReport => {
+                let len = self.sync_report.as_ref().map_or(0, Vec::len);
+                move_index_up(&mut self.sync_selected, len);
+            }
+            Screen::CheckReport => {
+                let len = self.check_report.as_ref().map_or(0, Vec::len);
+                move_index_up(&mut self.check_selected, len);
+            }
             Screen::Detail => {}
         }
     }
@@ -380,6 +422,8 @@ impl App {
             Screen::Library => self.library.go_top(),
             Screen::Search => self.search.go_top(),
             Screen::Edit => self.edit.go_top(),
+            Screen::SyncReport => self.sync_selected = 0,
+            Screen::CheckReport => self.check_selected = 0,
             Screen::Detail => {}
         }
     }
@@ -389,6 +433,14 @@ impl App {
             Screen::Library => self.library.go_bottom(),
             Screen::Search => self.search.go_bottom(),
             Screen::Edit => self.edit.go_bottom(),
+            Screen::SyncReport => {
+                let len = self.sync_report.as_ref().map_or(0, Vec::len);
+                self.sync_selected = len.saturating_sub(1);
+            }
+            Screen::CheckReport => {
+                let len = self.check_report.as_ref().map_or(0, Vec::len);
+                self.check_selected = len.saturating_sub(1);
+            }
             Screen::Detail => {}
         }
     }
@@ -534,8 +586,36 @@ impl App {
                 }
                 Err(e) => self.status.error(format!("{citation_key}: {e}")),
             },
+            JobOutcome::Synced(Ok(reports)) => {
+                self.status.success(format!("Synced {} paper(s)", reports.len()));
+                self.sync_selected = 0;
+                self.sync_report = Some(reports);
+                self.push_screen(Screen::SyncReport);
+                self.job_running = true;
+                return vec![Effect::Spawn(JobKind::LoadLibrary)];
+            }
+            JobOutcome::Synced(Err(e)) => self.status.error(e.to_string()),
+            JobOutcome::Checked(Ok(reports)) => {
+                self.status.success(format!("Checked {} paper(s)", reports.len()));
+                self.check_selected = 0;
+                self.check_report = Some(reports);
+                self.push_screen(Screen::CheckReport);
+            }
+            JobOutcome::Checked(Err(e)) => self.status.error(e.to_string()),
         }
         Vec::new()
+    }
+}
+
+fn move_index_down(selected: &mut usize, len: usize) {
+    if len > 0 {
+        *selected = (*selected + 1) % len;
+    }
+}
+
+fn move_index_up(selected: &mut usize, len: usize) {
+    if len > 0 {
+        *selected = (*selected + len - 1) % len;
     }
 }
 
@@ -1285,5 +1365,130 @@ mod tests {
         ));
         assert!(effects.is_empty());
         assert!(!app.job_running);
+    }
+
+    #[test]
+    fn trigger_sync_and_check_only_apply_on_library() {
+        let mut app = with_two_papers();
+        let sync_effects = app.apply(Action::TriggerSync);
+        assert!(matches!(sync_effects.as_slice(), [Effect::Spawn(JobKind::Sync)]));
+        assert!(app.job_running);
+        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+
+        app.job_running = false;
+        let check_effects = app.apply(Action::TriggerCheck);
+        assert!(matches!(check_effects.as_slice(), [Effect::Spawn(JobKind::Check)]));
+
+        app.job_running = false;
+        app.apply(Action::GoToSearch);
+        assert!(app.apply(Action::TriggerSync).is_empty());
+        assert!(app.apply(Action::TriggerCheck).is_empty());
+    }
+
+    #[test]
+    fn successful_sync_shows_reports_pushes_the_screen_and_reloads() {
+        let mut app = with_two_papers();
+        app.apply(Action::TriggerSync);
+        let reports = vec![
+            pax_core::SyncReport {
+                citation_key: "turing1936".to_string(),
+                result: Ok(FetchOutcome::Fetched {
+                    hash: "sha256-abc".to_string(),
+                }),
+            },
+            pax_core::SyncReport {
+                citation_key: "hewitt1973".to_string(),
+                result: Err(PaxError::NoSourceUrl("hewitt1973".to_string())),
+            },
+        ];
+        let effects = app.update(Message::Job(2, JobOutcome::Synced(Ok(reports))));
+        assert!(matches!(app.screen, Screen::SyncReport));
+        assert_eq!(app.sync_report.as_ref().unwrap().len(), 2);
+        assert_eq!(app.sync_selected, 0);
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Success, msg)) if msg.contains('2')
+        ));
+        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn failed_sync_shows_an_error_and_does_not_push_a_screen() {
+        let mut app = with_two_papers();
+        app.apply(Action::TriggerSync);
+        app.update(Message::Job(2, JobOutcome::Synced(Err(PaxError::NoChangesSpecified))));
+        assert!(matches!(app.screen, Screen::Library));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+    }
+
+    #[test]
+    fn successful_check_shows_reports_and_pushes_the_screen_without_reloading() {
+        let mut app = with_two_papers();
+        app.apply(Action::TriggerCheck);
+        let reports = vec![pax_core::CheckReport {
+            citation_key: "turing1936".to_string(),
+            status: pax_core::CheckStatus::Reproducible,
+        }];
+        let effects = app.update(Message::Job(2, JobOutcome::Checked(Ok(reports))));
+        assert!(matches!(app.screen, Screen::CheckReport));
+        assert_eq!(app.check_report.as_ref().unwrap().len(), 1);
+        assert!(effects.is_empty()); // check never writes, so no reload needed
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn failed_check_shows_an_error() {
+        let mut app = with_two_papers();
+        app.apply(Action::TriggerCheck);
+        app.update(Message::Job(2, JobOutcome::Checked(Err(PaxError::NoChangesSpecified))));
+        assert!(matches!(app.screen, Screen::Library));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+    }
+
+    #[test]
+    fn sync_and_check_report_screens_support_jk_navigation() {
+        let mut app = with_two_papers();
+        app.sync_report = Some(vec![
+            pax_core::SyncReport {
+                citation_key: "a".to_string(),
+                result: Ok(FetchOutcome::AlreadyFetched { hash: "h".to_string() }),
+            },
+            pax_core::SyncReport {
+                citation_key: "b".to_string(),
+                result: Ok(FetchOutcome::AlreadyFetched { hash: "h".to_string() }),
+            },
+        ]);
+        app.screen = Screen::SyncReport;
+        app.apply(Action::MoveDown);
+        assert_eq!(app.sync_selected, 1);
+        app.apply(Action::MoveDown); // wraps
+        assert_eq!(app.sync_selected, 0);
+        app.apply(Action::MoveUp); // wraps the other way
+        assert_eq!(app.sync_selected, 1);
+    }
+
+    #[test]
+    fn navigation_on_an_empty_report_is_a_no_op() {
+        let mut app = App::new();
+        app.screen = Screen::SyncReport;
+        app.apply(Action::MoveDown);
+        assert_eq!(app.sync_selected, 0);
+    }
+
+    #[test]
+    fn back_from_sync_report_returns_to_library() {
+        let mut app = with_two_papers();
+        app.apply(Action::TriggerSync);
+        app.update(Message::Job(2, JobOutcome::Synced(Ok(Vec::new()))));
+        assert!(matches!(app.screen, Screen::SyncReport));
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Library));
     }
 }

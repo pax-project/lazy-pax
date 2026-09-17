@@ -1,6 +1,7 @@
 pub mod detail;
 pub mod edit;
 pub mod library;
+pub mod reports;
 pub mod search;
 
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -29,6 +30,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 Mode::Normal => None,
             };
             edit::draw(frame, &app.edit, editing_target, content);
+        }
+        Screen::SyncReport => {
+            let empty = Vec::new();
+            let syncs = app.sync_report.as_ref().unwrap_or(&empty);
+            reports::draw_sync(frame, syncs, app.sync_selected, content);
+        }
+        Screen::CheckReport => {
+            let empty = Vec::new();
+            let checks = app.check_report.as_ref().unwrap_or(&empty);
+            reports::draw_check(frame, checks, app.check_selected, content);
         }
     }
 
@@ -62,11 +73,14 @@ fn hint_text(app: &App) -> String {
             }
             _ if !app.library.query.is_empty() => {
                 format!(
-                    "Filter: {}  (Enter/l, f: fetch, o: open, e: edit, d: remove, /: edit filter, Esc: clear, S: search, q: quit)",
+                    "Filter: {}  (Enter/l, f: fetch, o: open, e: edit, d: remove, s: sync, c: check, /: edit filter, Esc: clear, S: search, q: quit)",
                     app.library.query
                 )
             }
-            _ => "Enter/l: view  f: fetch  o: open  e: edit  d: remove  /: filter  S: search  q: quit".to_string(),
+            _ => {
+                "Enter/l: view  f: fetch  o: open  e: edit  d: remove  s: sync  c: check  /: filter  S: search  q: quit"
+                    .to_string()
+            }
         },
         Screen::Search => "Enter/l: view  Esc: back  q: quit".to_string(),
         Screen::Detail => match &app.detail.subject {
@@ -83,5 +97,6 @@ fn hint_text(app: &App) -> String {
             Mode::Insert(_) => "Enter: apply  Esc: cancel".to_string(),
             Mode::Normal => "j/k: field  i/Enter: edit  a: add tag  x: remove tag  w: save  Esc: back".to_string(),
         },
+        Screen::SyncReport | Screen::CheckReport => "j/k: scroll  Esc: back  q: quit".to_string(),
     }
 }

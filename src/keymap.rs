@@ -56,7 +56,7 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         }
         KeyCode::Esc => Some(match screen {
             Screen::Library => Action::ClearFilter,
-            Screen::Search | Screen::Detail | Screen::Edit => Action::Back,
+            Screen::Search | Screen::Detail | Screen::Edit | Screen::SyncReport | Screen::CheckReport => Action::Back,
         }),
         KeyCode::Char('/') if matches!(screen, Screen::Library) => {
             Some(Action::EnterInsert(InsertTarget::LibraryFilter))
@@ -74,6 +74,8 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         KeyCode::Char('o') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::Open),
         KeyCode::Char('e') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::EnterEdit),
         KeyCode::Char('d') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::TriggerRemove),
+        KeyCode::Char('s') if matches!(screen, Screen::Library) => Some(Action::TriggerSync),
+        KeyCode::Char('c') if matches!(screen, Screen::Library) => Some(Action::TriggerCheck),
         KeyCode::Char('w') if matches!(screen, Screen::Edit) => Some(Action::SaveEdit),
         KeyCode::Char('a') if matches!(screen, Screen::Edit) => Some(Action::EnterInsert(InsertTarget::EditTagAdd)),
         KeyCode::Char('x') if matches!(screen, Screen::Edit) => Some(Action::RemoveLastTag),
@@ -311,6 +313,34 @@ mod tests {
             );
         }
         assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('d')), None);
+    }
+
+    #[test]
+    fn s_and_c_trigger_sync_and_check_only_from_library() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('s')),
+            Some(Action::TriggerSync)
+        );
+        assert_eq!(
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('c')),
+            Some(Action::TriggerCheck)
+        );
+        assert_eq!(map_key(&Screen::Detail, &Mode::Normal, false, &mut pending, key('s')), None);
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('c')), None);
+    }
+
+    #[test]
+    fn esc_goes_back_from_sync_and_check_report_screens() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(&Screen::SyncReport, &Mode::Normal, false, &mut pending, key_code(KeyCode::Esc)),
+            Some(Action::Back)
+        );
+        assert_eq!(
+            map_key(&Screen::CheckReport, &Mode::Normal, false, &mut pending, key_code(KeyCode::Esc)),
+            Some(Action::Back)
+        );
     }
 
     #[test]

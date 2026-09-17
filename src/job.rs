@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use pax_core::{
-    CandidateId, CandidateWork, FetchOutcome, PaperEdits, PaperRef, PaxError, ProviderError, ProviderId, ResolvedArtifact,
+    CandidateId, CandidateWork, CheckReport, FetchOutcome, PaperEdits, PaperRef, PaxError, ProviderError, ProviderId,
+    ResolvedArtifact, SyncReport,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -27,6 +28,8 @@ pub enum JobKind {
     ResolveForOpen(String),
     EditPaper { citation_key: String, edits: PaperEdits },
     RemovePaper(String),
+    Sync,
+    Check,
 }
 
 pub enum JobOutcome {
@@ -52,6 +55,8 @@ pub enum JobOutcome {
         citation_key: String,
         result: Result<(), PaxError>,
     },
+    Synced(Result<Vec<SyncReport>, PaxError>),
+    Checked(Result<Vec<CheckReport>, PaxError>),
 }
 
 /// Why a declared paper couldn't be resolved to an openable path. Mirrors
@@ -133,6 +138,24 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let _ = tx.send(Message::Job(id, JobOutcome::Removed { citation_key, result }));
             });
         }
+        JobKind::Sync => {
+            tokio::spawn(async move {
+                let root = ctx.root.clone();
+                let result = tokio::task::spawn_blocking(move || pax_core::sync_library(&root))
+                    .await
+                    .expect("sync_library task panicked");
+                let _ = tx.send(Message::Job(id, JobOutcome::Synced(result)));
+            });
+        }
+        JobKind::Check => {
+            tokio::spawn(async move {
+                let root = ctx.root.clone();
+                let result = tokio::task::spawn_blocking(move || pax_core::check_library(&root))
+                    .await
+                    .expect("check_library task panicked");
+                let _ = tx.send(Message::Job(id, JobOutcome::Checked(result)));
+            });
+        }
         network_kind @ (JobKind::SearchAll(_)
         | JobKind::SearchByAuthor(_)
         | JobKind::SearchByDoi(_)
@@ -175,7 +198,9 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
         | JobKind::FetchPaper(_)
         | JobKind::ResolveForOpen(_)
         | JobKind::EditPaper { .. }
-        | JobKind::RemovePaper(_) => {
+        | JobKind::RemovePaper(_)
+        | JobKind::Sync
+        | JobKind::Check => {
             unreachable!("spawn_network is only called with network JobKinds")
         }
     }

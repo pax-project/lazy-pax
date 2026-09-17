@@ -108,8 +108,11 @@ reopens an item — it should stay accurate rather than aspirational.
 
 ### Sync / check
 
-- [ ] `sync` reachable as a library-wide action with per-paper summary
-- [ ] `check` reachable as a library-wide action with per-paper summary
+- [x] `sync` reachable as a library-wide action with per-paper summary (`s`
+      from Library; not selection-scoped, unlike fetch/open/edit/remove)
+- [x] `check` reachable as a library-wide action with per-paper summary
+      (`c`; confirmed genuinely read-only — `papers.nix` came back
+      byte-for-byte unchanged in end-to-end testing)
 
 ### Export
 
@@ -367,16 +370,40 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       both paths end-to-end against a real two-paper `research/papers.nix`
       — `d` → `n` left both papers untouched, `d` → `y` removed exactly
       the selected one and left the other byte-for-byte intact.
-- [ ] 11. Sync/Check (shared `reports.rs` rendering)
+- [x] 11. Sync/Check (shared `reports.rs` rendering) — new `Screen::SyncReport`/
+      `CheckReport`, reached via `s`/`c` from Library only (library-wide,
+      not selection-scoped like the other paper actions).
+      `JobKind::Sync`/`Check` wrap `pax_core::sync_library`/`check_library`
+      — sync/local-only (they shell out to `nix` per paper internally, but
+      that's one job dispatch from `App`'s perspective, not several), so
+      the plain `tokio::spawn`+`spawn_blocking` pattern again. One generic
+      `draw_report<T>` in `ui/reports.rs` renders either report type via a
+      per-type `to_line` closure (`sync_line`/`check_line`, each mirroring
+      the `pax` CLI's own wording) — same "shared renderer, per-type
+      formatting function" shape `ui/detail.rs` already used for
+      Candidate/Declared. `j`/`k` scroll via the same selected-index +
+      wraparound pattern as every other list screen (two small free
+      functions, `move_index_down`/`up`, factor the now-four-times-repeated
+      logic). A successful sync shows a count, pushes the report screen,
+      and reloads Library (hashes may have changed); check does the same
+      but never reloads, since it's read-only by design.
+      Verified: clean build/clippy, 127 unit tests pass (up from 113); ran
+      both against a real two-paper library (one fetchable, one without a
+      `source_url`) — `sync` correctly fetched the one that could be and
+      left the other's per-paper error isolated rather than failing the
+      whole run; `check` came back with `papers.nix` byte-for-byte
+      unchanged, confirming it's genuinely read-only; `j` scroll and
+      `Esc`-back from the report screen both worked cleanly.
 - [ ] 12. Export (bibtex render + optional file write)
 - [ ] 13. Init-on-launch
 
 ## Critical path
 
-Steps 1–10 of the build order are done (see above) — `lazypax` can search,
-inspect, declare, fetch, open, edit, and remove papers end-to-end, all
-verified against real `nix`/`pax_core` calls, not just fixtures. Standing
-reminders for whatever comes next:
+Steps 1–11 of the build order are done (see above) — `lazypax` can search,
+inspect, declare, fetch, open, edit, remove, sync, and check papers
+end-to-end, all verified against real `nix`/`pax_core` calls, not just
+fixtures. Only export and init-on-launch remain. Standing reminders for
+whatever comes next:
 
 - **The DSR cursor-query fix in `TerminalGuard::resume()`** (use `resize()`,
   not `clear()`) is a real, general-purpose fix, not a `script`-specific
@@ -399,6 +426,5 @@ reminders for whatever comes next:
   from_drifting` test); any new event-entry path into `App::update()` that
   bypassed `keymap` would reopen this.
 
-Next: step 11, Sync/Check — library-wide actions with a per-paper summary
-report, sharing one `reports.rs` rendering for both `Vec<SyncReport>` and
-`Vec<CheckReport>`.
+Next: step 12, Export — BibTeX render (pure, no I/O, callable directly like
+`filter_papers` rather than as a job) plus an optional file-write job.

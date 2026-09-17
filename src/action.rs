@@ -30,4 +30,6 @@ pub enum Action {
     RemoveConfirmed,
     ConfirmYes,
     ConfirmNo,
+    TriggerSync,
+    TriggerCheck,
 }
