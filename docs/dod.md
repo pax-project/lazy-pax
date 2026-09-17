@@ -200,15 +200,15 @@ And afterward:
 
 ---
 
-## 6. Explicitly deferred decisions
+## 6. Resolved decisions
 
-These are open questions to resolve during implementation, not blockers on
-writing this DoD:
-
-- TUI framework (`ratatui` + `crossterm` is the de facto standard for this and
-  the presumed default absent a reason otherwise).
-- Exact keybinding scheme.
-- Whether `pax-core` is pulled in as a `git` dependency pinned to a tag/rev, or
-  a `path` dependency for local co-development — likely `path` during active
-  parallel development of both repos, switched to a pinned `git`/version
-  dependency once `pax-core`'s API stabilizes.
+- **TUI framework:** `ratatui` + `crossterm`.
+- **Keybinding scheme:** vim-style (hjkl navigation, modal input where a mode
+  distinction is needed, `/`-style filtering) — consistent with `lazypax`
+  sitting in the same "lazy" family as `lazygit`/`lazydocker`.
+- **`pax-core` dependency:** `git` dependency on `Santiago-Garrote/pax`
+  pinned to the `1.0.0` release tag, `default-features = false` (the `cli`
+  feature — and its `clap`/`dotenvy`/`tokio` deps — stays off; `lazypax`
+  brings its own `tokio` for its own event loop and to drive `pax-core`'s
+  async functions). Confirmed building cleanly against that tag. Bumping the
+  pin to a later `pax` release is a deliberate, explicit step, not automatic.

@@ -109,16 +109,36 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       with no PDF source, opening/fetching without network access, quitting
       mid-action
 
-## Deferred decisions (docs/dod.md §6)
+## Decisions (docs/dod.md §6)
 
-- [ ] TUI framework chosen (`ratatui` + `crossterm` presumed default)
-- [ ] Keybinding scheme decided
-- [ ] `pax-core` dependency mode decided (path vs. pinned git/version)
+- [x] TUI framework chosen — `ratatui` + `crossterm`
+- [x] Keybinding scheme decided — vim-style (hjkl, modal where needed)
+- [x] `pax-core` dependency mode decided — `git` dependency pinned to the
+      `1.0.0` tag, `default-features = false`; confirmed building
+
+## Build order (see the MVP implementation plan for full architecture)
+
+- [x] 1. Event-loop skeleton — `TerminalGuard`, panic hook, input thread,
+      tick + `mpsc` select, `q` to quit. No `pax_core` calls yet. Verified:
+      clean build/clippy, keymap unit tests pass, ran in a pty and confirmed
+      alt-screen/raw-mode enter and exit are correctly paired on quit.
+- [ ] 2. Library view, read-only, against a fixture `research/papers.nix`
+- [ ] 3. In-memory `/`-filter via `filter_papers`
+- [ ] 4. Search view + provider-grouped rendering
+- [ ] 5. Detail view for a `CandidateWork`
+- [ ] 6. Add flow (`JobKind::AddCandidate`)
+- [ ] 7. Detail view for a declared `Paper`
+- [ ] 8. Fetch + Open (suspend/resume bracket + `resolve_for_open`)
+- [ ] 9. Edit (tags/notes, then rename + identity corrections)
+- [ ] 10. Remove (via `ConfirmPrompt` overlay)
+- [ ] 11. Sync/Check (shared `reports.rs` rendering)
+- [ ] 12. Export (bibtex render + optional file write)
+- [ ] 13. Init-on-launch
 
 ## Critical path
 
-Nothing implemented yet — `src/main.rs` is still the `cargo new` placeholder
-and `Cargo.toml` has no dependencies. First steps: pick the `pax-core`
-dependency mode, add `ratatui`/`crossterm` (or the chosen alternative), and
-scaffold the library view against a real `research/` directory before
-building out search/add/fetch.
+Step 1 of the build order is done (see above) — `src/main.rs` now runs a
+real event loop rendering a placeholder Library screen; still zero calls
+into `pax_core`. Next: step 2, a read-only library view against a fixture
+`research/papers.nix`, introducing `job.rs`/`pax_ctx.rs` and the
+`LoadLibrary` job.
