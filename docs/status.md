@@ -90,12 +90,14 @@ reopens an item — it should stay accurate rather than aspirational.
 
 ### Edit
 
-- [ ] Tags editable in place
-- [ ] Notes editable in place
-- [ ] Citation-key rename (only if present in the `pax-core` version depended
-      on)
-- [ ] Identity corrections — title/author/year/DOI (only if present in the
-      `pax-core` version depended on)
+- [x] Tags editable in place (`a` adds, `x` removes the last one; diffed
+      against the paper's original tags into `PaperEdits`'s incremental
+      add/remove lists on save)
+- [x] Notes editable in place
+- [x] Citation-key rename — present in the pinned `pax-core` 1.0.0 (resolves
+      the DoD's "if present" hedge in favor of full support)
+- [x] Identity corrections — title/author/year/DOI, all present in the
+      pinned `pax-core` 1.0.0
 
 ### Remove
 
@@ -304,7 +306,39 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       `pax`'s own templates, git-tracked as `nix build` requires) with a
       real small HTTP URL — `nix store prefetch-file` and `nix build` both
       genuinely ran and produced correct, verifiable results on disk.
-- [ ] 9. Edit (tags/notes, then rename + identity corrections)
+- [x] 9. Edit (tags/notes, then rename + identity corrections) — new
+      `Screen::Edit`, reached via `e` from Library or Detail(Declared);
+      `j`/`k` move focus across 7 fields (Tags/Notes/Citation
+      key/Title/Authors/Year/DOI), `i`/`Enter` opens the focused field's
+      buffer (reusing the existing Insert-mode machinery — one new
+      `InsertTarget` variant per field, one shared `EditScreen.buffer`),
+      `a`/`x` add/remove tags directly (no per-tag cursor — a deliberate
+      MVP simplification: `x` always removes the *last* tag rather than a
+      selected one), `w` saves via `JobKind::EditPaper`
+      (`pax_core::edit_paper` — sync/local-only, no network, so the plain
+      `tokio::spawn`+`spawn_blocking` pattern, not `spawn_network`), `Esc`
+      discards and goes back without saving.
+      **Real bug caught by my own tests, fixed before it shipped**: the
+      first `build_edits` used "field is non-empty" to decide whether to
+      include it in the saved `PaperEdits` — but `title`/`authors` are
+      *always* non-empty on a real paper, so every save would have resent
+      them regardless of whether the user touched them. Fixed by tracking
+      each single-value field's original loaded value and only including
+      it when the current value actually differs (and never as an empty
+      string — `pax-core` has no way to clear a field back to `null`
+      anyway, so an emptied buffer means "leave unchanged", not "blank
+      it"). A successful save shows "Updated `<key>`" and returns to
+      Library (rather than staying on a Detail/Edit session that might now
+      reference a stale, renamed citation key) plus a `LoadLibrary` reload;
+      a failure shows the `PaxError` and stays on the Edit screen so the
+      user can retry.
+      Verified: clean build/clippy, 103 unit tests pass (up from 93,
+      including the caught-and-fixed dirty-tracking bug and a permanent
+      regression test for it); ran real end-to-end saves against a live
+      `research/papers.nix` — tag add, notes set, citation-key rename, and
+      title correction — each confirming every *untouched* field (DOI,
+      venue, hash, etc.) came back byte-for-byte identical, not just the
+      touched ones changing correctly.
 - [ ] 10. Remove (via `ConfirmPrompt` overlay)
 - [ ] 11. Sync/Check (shared `reports.rs` rendering)
 - [ ] 12. Export (bibtex render + optional file write)
@@ -329,6 +363,18 @@ inspect, declare, fetch, and open papers end-to-end, verified against real
   diagnostic binary, are the two verification paths that reliably work
   here.
 
-Next: step 9, Edit — tags/notes first (using the existing Insert-mode
-machinery), then citation-key rename and identity corrections via the same
-`PaperEdits` accumulator.
+Steps 1–9 are now done. Edit confirmed the Insert-mode machinery generalizes
+cleanly to a 7-field form (one `InsertTarget` variant + one shared buffer
+per field, mechanical to extend) and caught a real dirty-tracking bug via
+its own unit tests before it ever ran against a real library — worth
+remembering as a pattern: any future field prefilled from existing data
+needs "changed from original", not "non-empty", to decide whether to
+include it in a save. `JobKind::EditPaper` is sync/local-only like
+`LoadLibrary`/`FetchPaper` (not `spawn_network`), and reliable under
+`script` even as a same-session second job, unlike the subprocess-launching
+jobs — consistent with the pattern that only subprocess/network jobs hit
+that particular pty limitation.
+
+Next: step 10, Remove — the one action that gets an explicit `ConfirmPrompt`
+y/n overlay, via `pax_core::remove_paper` (sync/local-only, same job
+pattern as Edit).

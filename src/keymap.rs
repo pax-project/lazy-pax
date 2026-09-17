@@ -39,7 +39,7 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         }
         KeyCode::Esc => Some(match screen {
             Screen::Library => Action::ClearFilter,
-            Screen::Search | Screen::Detail => Action::Back,
+            Screen::Search | Screen::Detail | Screen::Edit => Action::Back,
         }),
         KeyCode::Char('/') if matches!(screen, Screen::Library) => {
             Some(Action::EnterInsert(InsertTarget::LibraryFilter))
@@ -55,6 +55,11 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         KeyCode::Char('a') if matches!(screen, Screen::Detail) => Some(Action::AddCandidate),
         KeyCode::Char('f') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::Fetch),
         KeyCode::Char('o') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::Open),
+        KeyCode::Char('e') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::EnterEdit),
+        KeyCode::Char('w') if matches!(screen, Screen::Edit) => Some(Action::SaveEdit),
+        KeyCode::Char('a') if matches!(screen, Screen::Edit) => Some(Action::EnterInsert(InsertTarget::EditTagAdd)),
+        KeyCode::Char('x') if matches!(screen, Screen::Edit) => Some(Action::RemoveLastTag),
+        KeyCode::Char('i') | KeyCode::Enter if matches!(screen, Screen::Edit) => Some(Action::EditFocusedField),
         _ => None,
     }
 }
@@ -234,6 +239,48 @@ mod tests {
         }
         assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('f')), None);
         assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('o')), None);
+    }
+
+    #[test]
+    fn e_enters_edit_from_library_and_detail_but_not_search() {
+        let mut pending = PendingInput::default();
+        for screen in [Screen::Library, Screen::Detail] {
+            assert_eq!(map_key(&screen, &Mode::Normal, &mut pending, key('e')), Some(Action::EnterEdit));
+        }
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('e')), None);
+    }
+
+    #[test]
+    fn edit_screen_bindings() {
+        let mut pending = PendingInput::default();
+        assert_eq!(map_key(&Screen::Edit, &Mode::Normal, &mut pending, key('w')), Some(Action::SaveEdit));
+        assert_eq!(
+            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key('a')),
+            Some(Action::EnterInsert(InsertTarget::EditTagAdd))
+        );
+        assert_eq!(
+            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key('x')),
+            Some(Action::RemoveLastTag)
+        );
+        assert_eq!(
+            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key('i')),
+            Some(Action::EditFocusedField)
+        );
+        assert_eq!(
+            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
+            Some(Action::EditFocusedField)
+        );
+        assert_eq!(
+            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key_code(KeyCode::Esc)),
+            Some(Action::Back)
+        );
+    }
+
+    #[test]
+    fn edit_only_bindings_are_screen_scoped() {
+        let mut pending = PendingInput::default();
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, &mut pending, key('w')), None);
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, &mut pending, key('x')), None);
     }
 
     #[test]

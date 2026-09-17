@@ -1,4 +1,5 @@
 pub mod detail;
+pub mod edit;
 pub mod library;
 pub mod search;
 
@@ -22,6 +23,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
             search::draw(frame, &app.search, editing, content);
         }
         Screen::Detail => detail::draw(frame, &app.detail, content),
+        Screen::Edit => {
+            let editing_target = match app.mode {
+                Mode::Insert(target) => Some(target),
+                Mode::Normal => None,
+            };
+            edit::draw(frame, &app.edit, editing_target, content);
+        }
     }
 
     draw_status_bar(frame, app, status);
@@ -49,11 +57,11 @@ fn hint_text(app: &App) -> String {
             }
             _ if !app.library.query.is_empty() => {
                 format!(
-                    "Filter: {}  (Enter/l, f: fetch, o: open, /: edit, Esc: clear, S: search, q: quit)",
+                    "Filter: {}  (Enter/l, f: fetch, o: open, e: edit, /: edit filter, Esc: clear, S: search, q: quit)",
                     app.library.query
                 )
             }
-            _ => "Enter/l: view  f: fetch  o: open  /: filter  S: search  q: quit".to_string(),
+            _ => "Enter/l: view  f: fetch  o: open  e: edit  /: filter  S: search  q: quit".to_string(),
         },
         Screen::Search => "Enter/l: view  Esc: back  q: quit".to_string(),
         Screen::Detail => match &app.detail.subject {
@@ -61,8 +69,12 @@ fn hint_text(app: &App) -> String {
                 "a: add anyway (already in library)  Esc: back  q: quit".to_string()
             }
             Some(DetailSubject::Candidate { in_library: false, .. }) => "a: add  Esc: back  q: quit".to_string(),
-            Some(DetailSubject::Declared(_)) => "f: fetch  o: open  Esc: back  q: quit".to_string(),
+            Some(DetailSubject::Declared(_)) => "f: fetch  o: open  e: edit  Esc: back  q: quit".to_string(),
             None => "Esc: back  q: quit".to_string(),
+        },
+        Screen::Edit => match &app.mode {
+            Mode::Insert(_) => "Enter: apply  Esc: cancel".to_string(),
+            Mode::Normal => "j/k: field  i/Enter: edit  a: add tag  x: remove tag  w: save  Esc: back".to_string(),
         },
     }
 }

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use pax_core::{CandidateId, CandidateWork, FetchOutcome, PaxError, PaperRef, ProviderError, ProviderId, ResolvedArtifact};
+use pax_core::{
+    CandidateId, CandidateWork, FetchOutcome, PaperEdits, PaperRef, PaxError, ProviderError, ProviderId, ResolvedArtifact,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::message::Message;
@@ -23,6 +25,7 @@ pub enum JobKind {
     AddCandidate(CandidateId),
     FetchPaper(String),
     ResolveForOpen(String),
+    EditPaper { citation_key: String, edits: PaperEdits },
 }
 
 pub enum JobOutcome {
@@ -39,6 +42,10 @@ pub enum JobOutcome {
     ReadyToOpen {
         citation_key: String,
         result: Result<PathBuf, OpenError>,
+    },
+    Edited {
+        citation_key: String,
+        result: Result<(), PaxError>,
     },
 }
 
@@ -101,6 +108,16 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let _ = tx.send(Message::Job(id, JobOutcome::ReadyToOpen { citation_key, result }));
             });
         }
+        JobKind::EditPaper { citation_key, edits } => {
+            tokio::spawn(async move {
+                let root = ctx.root.clone();
+                let key = citation_key.clone();
+                let result = tokio::task::spawn_blocking(move || pax_core::edit_paper(&key, &root, &edits))
+                    .await
+                    .expect("edit_paper task panicked");
+                let _ = tx.send(Message::Job(id, JobOutcome::Edited { citation_key, result }));
+            });
+        }
         network_kind @ (JobKind::SearchAll(_)
         | JobKind::SearchByAuthor(_)
         | JobKind::SearchByDoi(_)
@@ -139,7 +156,7 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
             let result = pax_core::add_candidate(&candidate_id, &ctx.root, &ctx.config).await;
             JobOutcome::Added(result)
         }
-        JobKind::LoadLibrary | JobKind::FetchPaper(_) | JobKind::ResolveForOpen(_) => {
+        JobKind::LoadLibrary | JobKind::FetchPaper(_) | JobKind::ResolveForOpen(_) | JobKind::EditPaper { .. } => {
             unreachable!("spawn_network is only called with network JobKinds")
         }
     }

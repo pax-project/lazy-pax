@@ -22,4 +22,8 @@ pub enum Action {
     AddCandidate,
     Fetch,
     Open,
+    EnterEdit,
+    SaveEdit,
+    EditFocusedField,
+    RemoveLastTag,
 }

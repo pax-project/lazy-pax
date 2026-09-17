@@ -8,6 +8,7 @@ use crate::job::{JobKind, JobOutcome};
 use crate::message::{Effect, Message};
 use crate::status::StatusBar;
 use crate::ui::detail::{DetailScreen, DetailSubject};
+use crate::ui::edit::EditScreen;
 use crate::ui::library::{LibraryScreen, LibraryState};
 use crate::ui::search::{SearchKind, SearchScreen, SearchState};
 
@@ -18,6 +19,7 @@ pub enum Screen {
     Library,
     Search,
     Detail,
+    Edit,
 }
 
 /// Normal (navigation) vs. text-entry input. `Insert` carries which field
@@ -32,6 +34,13 @@ pub enum Mode {
 pub enum InsertTarget {
     LibraryFilter,
     SearchQuery,
+    EditTagAdd,
+    EditNotes,
+    EditRename,
+    EditTitle,
+    EditAuthors,
+    EditYear,
+    EditDoi,
 }
 
 /// Tracks a `g` press waiting for a second key (`gg` -> go to top). Reset on
@@ -58,6 +67,7 @@ pub struct App {
     pub library: LibraryScreen,
     pub search: SearchScreen,
     pub detail: DetailScreen,
+    pub edit: EditScreen,
 }
 
 impl App {
@@ -73,6 +83,7 @@ impl App {
             library: LibraryScreen::default(),
             search: SearchScreen::default(),
             detail: DetailScreen::default(),
+            edit: EditScreen::default(),
         }
     }
 
@@ -149,6 +160,7 @@ impl App {
                 match target {
                     InsertTarget::LibraryFilter => self.library.begin_filter_edit(),
                     InsertTarget::SearchQuery => self.search.begin_query_edit(),
+                    edit_target => self.edit.begin_field_edit(edit_target),
                 }
                 self.mode = Mode::Insert(target);
                 Vec::new()
@@ -191,7 +203,7 @@ impl App {
                         .selected_candidate()
                         .map(|(work, in_library)| DetailSubject::Candidate { work, in_library }),
                     Screen::Library => self.library.selected_paper().map(DetailSubject::Declared),
-                    Screen::Detail => None,
+                    Screen::Detail | Screen::Edit => None,
                 };
                 if let Some(subject) = subject {
                     self.detail.subject = Some(subject);
@@ -202,6 +214,23 @@ impl App {
             Action::AddCandidate => self.add_selected_candidate(),
             Action::Fetch => self.fetch_selected(),
             Action::Open => self.open_selected(),
+            Action::EnterEdit => self.enter_edit(),
+            Action::SaveEdit => self.save_edit(),
+            Action::EditFocusedField => {
+                if self.screen == Screen::Edit
+                    && let Some(target) = self.edit.focused_insert_target()
+                {
+                    self.edit.begin_field_edit(target);
+                    self.mode = Mode::Insert(target);
+                }
+                Vec::new()
+            }
+            Action::RemoveLastTag => {
+                if self.screen == Screen::Edit {
+                    self.edit.remove_last_tag();
+                }
+                Vec::new()
+            }
         }
     }
 
@@ -221,17 +250,41 @@ impl App {
 
     /// The declared paper the current screen has selected — the Library's
     /// highlighted row, or the paper a Detail view is showing (`None` for a
-    /// candidate detail, which isn't fetchable/openable). Shared by
-    /// fetch/open, which are reachable from either screen.
-    fn selected_declared_key(&self) -> Option<String> {
+    /// candidate detail, which isn't fetchable/openable/editable). Shared
+    /// by fetch/open/edit, all reachable from either screen.
+    fn selected_declared_paper(&self) -> Option<pax_core::Paper> {
         match self.screen {
-            Screen::Library => self.library.selected_paper().map(|p| p.local.citation_key),
+            Screen::Library => self.library.selected_paper(),
             Screen::Detail => match &self.detail.subject {
-                Some(DetailSubject::Declared(paper)) => Some(paper.local.citation_key.clone()),
+                Some(DetailSubject::Declared(paper)) => Some(paper.clone()),
                 _ => None,
             },
-            Screen::Search => None,
+            Screen::Search | Screen::Edit => None,
         }
+    }
+
+    fn selected_declared_key(&self) -> Option<String> {
+        self.selected_declared_paper().map(|p| p.local.citation_key)
+    }
+
+    fn enter_edit(&mut self) -> Vec<Effect> {
+        if let Some(paper) = self.selected_declared_paper() {
+            self.edit = EditScreen::from_paper(&paper);
+            self.push_screen(Screen::Edit);
+        }
+        Vec::new()
+    }
+
+    fn save_edit(&mut self) -> Vec<Effect> {
+        if self.screen != Screen::Edit {
+            return Vec::new();
+        }
+        if !self.start_job() {
+            return Vec::new();
+        }
+        let citation_key = self.edit.citation_key.clone();
+        let edits = self.edit.build_edits();
+        vec![Effect::Spawn(JobKind::EditPaper { citation_key, edits })]
     }
 
     fn fetch_selected(&mut self) -> Vec<Effect> {
@@ -269,6 +322,7 @@ impl App {
         match self.screen {
             Screen::Library => self.library.move_down(),
             Screen::Search => self.search.move_down(),
+            Screen::Edit => self.edit.focus_next(),
             Screen::Detail => {}
         }
     }
@@ -277,6 +331,7 @@ impl App {
         match self.screen {
             Screen::Library => self.library.move_up(),
             Screen::Search => self.search.move_up(),
+            Screen::Edit => self.edit.focus_prev(),
             Screen::Detail => {}
         }
     }
@@ -285,6 +340,7 @@ impl App {
         match self.screen {
             Screen::Library => self.library.go_top(),
             Screen::Search => self.search.go_top(),
+            Screen::Edit => self.edit.go_top(),
             Screen::Detail => {}
         }
     }
@@ -293,6 +349,7 @@ impl App {
         match self.screen {
             Screen::Library => self.library.go_bottom(),
             Screen::Search => self.search.go_bottom(),
+            Screen::Edit => self.edit.go_bottom(),
             Screen::Detail => {}
         }
     }
@@ -301,6 +358,7 @@ impl App {
         match self.mode {
             Mode::Insert(InsertTarget::LibraryFilter) => self.library.filter_buffer.push(c),
             Mode::Insert(InsertTarget::SearchQuery) => self.search.query_buffer.push(c),
+            Mode::Insert(_) => self.edit.buffer.push(c),
             Mode::Normal => {}
         }
     }
@@ -313,6 +371,9 @@ impl App {
             Mode::Insert(InsertTarget::SearchQuery) => {
                 self.search.query_buffer.pop();
             }
+            Mode::Insert(_) => {
+                self.edit.buffer.pop();
+            }
             Mode::Normal => {}
         }
     }
@@ -324,6 +385,10 @@ impl App {
                 Vec::new()
             }
             Mode::Insert(InsertTarget::SearchQuery) => self.submit_search_query(),
+            Mode::Insert(target) => {
+                self.edit.commit_field_edit(target);
+                Vec::new()
+            }
             Mode::Normal => Vec::new(),
         };
         self.mode = Mode::Normal;
@@ -405,6 +470,20 @@ impl App {
                     ];
                 }
                 Err(e) => self.status.error(e.to_string()),
+            },
+            JobOutcome::Edited { citation_key, result } => match result {
+                Ok(()) => {
+                    self.status.success(format!("Updated {citation_key}"));
+                    // A rename means `citation_key` no longer identifies the
+                    // paper; rather than patch every screen's stale copy of
+                    // it, just return to Library, where the reload below
+                    // picks up the current state.
+                    self.screen = Screen::Library;
+                    self.screen_stack.clear();
+                    self.job_running = true;
+                    return vec![Effect::Spawn(JobKind::LoadLibrary)];
+                }
+                Err(e) => self.status.error(format!("{citation_key}: {e}")),
             },
         }
         Vec::new()
@@ -912,5 +991,132 @@ mod tests {
             &app.status.message,
             Some((crate::status::StatusKind::Error, msg)) if msg.contains("turing1936")
         ));
+    }
+
+    #[test]
+    fn enter_edit_from_library_prefills_from_the_selected_paper() {
+        let mut app = with_two_papers();
+        app.library.selected = 1; // hewitt1973
+        app.apply(Action::EnterEdit);
+        assert!(matches!(app.screen, Screen::Edit));
+        assert_eq!(app.edit.citation_key, "hewitt1973");
+        assert_eq!(app.edit.title, "A Universal Modular Actor Formalism");
+    }
+
+    #[test]
+    fn enter_edit_is_a_no_op_on_search() {
+        let mut app = with_search_results();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::EnterEdit);
+        assert!(matches!(app.screen, Screen::Search));
+    }
+
+    #[test]
+    fn save_edit_spawns_the_job_with_the_built_edits() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit); // turing1936
+        app.edit.tags.push("newtag".to_string());
+        let effects = app.apply(Action::SaveEdit);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::EditPaper { citation_key, edits })]
+                if citation_key == "turing1936" && edits.add_tags == vec!["newtag".to_string()]
+        ));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn save_edit_is_a_no_op_outside_edit_screen() {
+        let mut app = with_two_papers();
+        let effects = app.apply(Action::SaveEdit);
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn successful_edit_shows_success_returns_to_library_and_reloads() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit);
+        app.apply(Action::SaveEdit);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Edited {
+                citation_key: "turing1936".to_string(),
+                result: Ok(()),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Success, msg)) if msg.contains("turing1936")
+        ));
+        assert!(matches!(app.screen, Screen::Library));
+        assert!(app.screen_stack.is_empty());
+        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn failed_edit_shows_an_error_and_stays_on_the_edit_screen() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit);
+        app.apply(Action::SaveEdit);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Edited {
+                citation_key: "turing1936".to_string(),
+                result: Err(PaxError::NoChangesSpecified),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+        assert!(matches!(app.screen, Screen::Edit));
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn edit_focused_field_enters_insert_mode_for_the_focused_field() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit);
+        app.edit.focus = crate::ui::edit::EditField::Title;
+        app.apply(Action::EditFocusedField);
+        assert!(matches!(app.mode, Mode::Insert(InsertTarget::EditTitle)));
+        assert_eq!(app.edit.buffer, "On Computable Numbers");
+    }
+
+    #[test]
+    fn edit_focused_field_on_tags_is_a_no_op_since_tags_has_no_single_buffer() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit); // focus starts on Tags
+        app.apply(Action::EditFocusedField);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn typing_and_submitting_updates_the_edit_screens_field() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit);
+        app.edit.focus = crate::ui::edit::EditField::Notes;
+        app.apply(Action::EditFocusedField);
+        for c in "new notes".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        app.apply(Action::SubmitInput);
+        assert_eq!(app.edit.notes, "new notes");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn remove_last_tag_action_only_applies_on_edit_screen() {
+        let mut app = with_two_papers();
+        app.apply(Action::RemoveLastTag);
+        assert!(app.library.selected_paper().is_some()); // untouched, still on Library
+
+        app.apply(Action::EnterEdit);
+        let before = app.edit.tags.len();
+        app.apply(Action::RemoveLastTag);
+        assert_eq!(app.edit.tags.len(), before.saturating_sub(1));
     }
 }
