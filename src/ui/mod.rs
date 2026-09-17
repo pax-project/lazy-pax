@@ -4,7 +4,7 @@ pub mod library;
 pub mod search;
 
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
@@ -36,7 +36,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let (text, style) = if let Some((kind, msg)) = &app.status.message {
+    let (text, style) = if let Some(prompt) = &app.confirm {
+        (
+            format!("{}  (y/n)", prompt.message),
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        )
+    } else if let Some((kind, msg)) = &app.status.message {
         let color = match kind {
             StatusKind::Error => Color::Red,
             StatusKind::Success => Color::Green,
@@ -57,11 +62,11 @@ fn hint_text(app: &App) -> String {
             }
             _ if !app.library.query.is_empty() => {
                 format!(
-                    "Filter: {}  (Enter/l, f: fetch, o: open, e: edit, /: edit filter, Esc: clear, S: search, q: quit)",
+                    "Filter: {}  (Enter/l, f: fetch, o: open, e: edit, d: remove, /: edit filter, Esc: clear, S: search, q: quit)",
                     app.library.query
                 )
             }
-            _ => "Enter/l: view  f: fetch  o: open  e: edit  /: filter  S: search  q: quit".to_string(),
+            _ => "Enter/l: view  f: fetch  o: open  e: edit  d: remove  /: filter  S: search  q: quit".to_string(),
         },
         Screen::Search => "Enter/l: view  Esc: back  q: quit".to_string(),
         Screen::Detail => match &app.detail.subject {
@@ -69,7 +74,9 @@ fn hint_text(app: &App) -> String {
                 "a: add anyway (already in library)  Esc: back  q: quit".to_string()
             }
             Some(DetailSubject::Candidate { in_library: false, .. }) => "a: add  Esc: back  q: quit".to_string(),
-            Some(DetailSubject::Declared(_)) => "f: fetch  o: open  e: edit  Esc: back  q: quit".to_string(),
+            Some(DetailSubject::Declared(_)) => {
+                "f: fetch  o: open  e: edit  d: remove  Esc: back  q: quit".to_string()
+            }
             None => "Esc: back  q: quit".to_string(),
         },
         Screen::Edit => match &app.mode {

@@ -26,4 +26,8 @@ pub enum Action {
     SaveEdit,
     EditFocusedField,
     RemoveLastTag,
+    TriggerRemove,
+    RemoveConfirmed,
+    ConfirmYes,
+    ConfirmNo,
 }

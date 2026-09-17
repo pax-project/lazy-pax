@@ -5,7 +5,24 @@ use crate::app::{InsertTarget, Mode, PendingInput, Screen};
 
 /// Pure key -> intent mapping. No I/O, no `App` access beyond the small
 /// `PendingInput` accumulator (for `gg`) — unit-testable in isolation.
-pub fn map_key(screen: &Screen, mode: &Mode, pending: &mut PendingInput, key: KeyEvent) -> Option<Action> {
+/// `confirm_active` is checked before anything else: while a confirmation
+/// overlay is up, no other key (including navigation) does anything but
+/// answer it — this is what makes it safe for `Action::ConfirmYes` to act
+/// on "whatever's currently selected" without re-resolving the target.
+pub fn map_key(
+    screen: &Screen,
+    mode: &Mode,
+    confirm_active: bool,
+    pending: &mut PendingInput,
+    key: KeyEvent,
+) -> Option<Action> {
+    if confirm_active {
+        return match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => Some(Action::ConfirmYes),
+            KeyCode::Char('n') | KeyCode::Esc => Some(Action::ConfirmNo),
+            _ => None,
+        };
+    }
     match mode {
         Mode::Insert(_) => match key.code {
             KeyCode::Esc => Some(Action::CancelInput),
@@ -56,6 +73,7 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         KeyCode::Char('f') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::Fetch),
         KeyCode::Char('o') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::Open),
         KeyCode::Char('e') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::EnterEdit),
+        KeyCode::Char('d') if matches!(screen, Screen::Library | Screen::Detail) => Some(Action::TriggerRemove),
         KeyCode::Char('w') if matches!(screen, Screen::Edit) => Some(Action::SaveEdit),
         KeyCode::Char('a') if matches!(screen, Screen::Edit) => Some(Action::EnterInsert(InsertTarget::EditTagAdd)),
         KeyCode::Char('x') if matches!(screen, Screen::Edit) => Some(Action::RemoveLastTag),
@@ -80,7 +98,7 @@ mod tests {
     fn q_maps_to_quit() {
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key('q')),
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('q')),
             Some(Action::Quit)
         );
     }
@@ -88,18 +106,18 @@ mod tests {
     #[test]
     fn unmapped_key_is_none() {
         let mut pending = PendingInput::default();
-        assert_eq!(map_key(&Screen::Library, &Mode::Normal, &mut pending, key('z')), None);
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('z')), None);
     }
 
     #[test]
     fn j_and_k_map_to_move() {
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key('j')),
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('j')),
             Some(Action::MoveDown)
         );
         assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key('k')),
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('k')),
             Some(Action::MoveUp)
         );
     }
@@ -108,7 +126,7 @@ mod tests {
     fn capital_g_maps_to_go_bottom() {
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key('G')),
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('G')),
             Some(Action::GoBottom)
         );
     }
@@ -116,10 +134,10 @@ mod tests {
     #[test]
     fn gg_maps_to_go_top() {
         let mut pending = PendingInput::default();
-        assert_eq!(map_key(&Screen::Library, &Mode::Normal, &mut pending, key('g')), None);
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('g')), None);
         assert!(pending.g_pressed);
         assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key('g')),
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('g')),
             Some(Action::GoTop)
         );
         assert!(!pending.g_pressed);
@@ -128,8 +146,8 @@ mod tests {
     #[test]
     fn g_then_unrelated_key_clears_pending_without_an_action() {
         let mut pending = PendingInput::default();
-        assert_eq!(map_key(&Screen::Library, &Mode::Normal, &mut pending, key('g')), None);
-        assert_eq!(map_key(&Screen::Library, &Mode::Normal, &mut pending, key('j')), None);
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('g')), None);
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('j')), None);
         assert!(!pending.g_pressed);
     }
 
@@ -137,7 +155,7 @@ mod tests {
     fn slash_enters_library_filter_insert_mode_on_library_screen() {
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key('/')),
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('/')),
             Some(Action::EnterInsert(InsertTarget::LibraryFilter))
         );
     }
@@ -146,7 +164,7 @@ mod tests {
     fn slash_enters_search_query_insert_mode_on_search_screen() {
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Search, &Mode::Normal, &mut pending, key('/')),
+            map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('/')),
             Some(Action::EnterInsert(InsertTarget::SearchQuery))
         );
     }
@@ -155,15 +173,15 @@ mod tests {
     fn esc_in_normal_mode_clears_filter_on_library_and_goes_back_on_search_or_detail() {
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key_code(KeyCode::Esc)),
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key_code(KeyCode::Esc)),
             Some(Action::ClearFilter)
         );
         assert_eq!(
-            map_key(&Screen::Search, &Mode::Normal, &mut pending, key_code(KeyCode::Esc)),
+            map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key_code(KeyCode::Esc)),
             Some(Action::Back)
         );
         assert_eq!(
-            map_key(&Screen::Detail, &Mode::Normal, &mut pending, key_code(KeyCode::Esc)),
+            map_key(&Screen::Detail, &Mode::Normal, false, &mut pending, key_code(KeyCode::Esc)),
             Some(Action::Back)
         );
     }
@@ -173,16 +191,16 @@ mod tests {
         let mut pending = PendingInput::default();
         for screen in [Screen::Search, Screen::Library] {
             assert_eq!(
-                map_key(&screen, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
+                map_key(&screen, &Mode::Normal, false, &mut pending, key_code(KeyCode::Enter)),
                 Some(Action::OpenDetail)
             );
             assert_eq!(
-                map_key(&screen, &Mode::Normal, &mut pending, key('l')),
+                map_key(&screen, &Mode::Normal, false, &mut pending, key('l')),
                 Some(Action::OpenDetail)
             );
         }
         assert_eq!(
-            map_key(&Screen::Detail, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
+            map_key(&Screen::Detail, &Mode::Normal, false, &mut pending, key_code(KeyCode::Enter)),
             None
         );
     }
@@ -191,21 +209,21 @@ mod tests {
     fn capital_s_goes_to_search_only_from_library() {
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key('S')),
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('S')),
             Some(Action::GoToSearch)
         );
-        assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('S')), None);
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('S')), None);
     }
 
     #[test]
     fn tab_cycles_search_mode_only_on_search_screen() {
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Search, &Mode::Normal, &mut pending, key_code(KeyCode::Tab)),
+            map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key_code(KeyCode::Tab)),
             Some(Action::CycleSearchMode)
         );
         assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key_code(KeyCode::Tab)),
+            map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key_code(KeyCode::Tab)),
             None
         );
     }
@@ -215,7 +233,7 @@ mod tests {
         let mode = Mode::Insert(InsertTarget::SearchQuery);
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Search, &mode, &mut pending, key_code(KeyCode::Tab)),
+            map_key(&Screen::Search, &mode, false, &mut pending, key_code(KeyCode::Tab)),
             Some(Action::CycleSearchMode)
         );
     }
@@ -224,54 +242,54 @@ mod tests {
     fn a_adds_the_candidate_only_on_detail_screen() {
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Detail, &Mode::Normal, &mut pending, key('a')),
+            map_key(&Screen::Detail, &Mode::Normal, false, &mut pending, key('a')),
             Some(Action::AddCandidate)
         );
-        assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('a')), None);
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('a')), None);
     }
 
     #[test]
     fn f_and_o_fetch_and_open_on_library_and_detail_but_not_search() {
         let mut pending = PendingInput::default();
         for screen in [Screen::Library, Screen::Detail] {
-            assert_eq!(map_key(&screen, &Mode::Normal, &mut pending, key('f')), Some(Action::Fetch));
-            assert_eq!(map_key(&screen, &Mode::Normal, &mut pending, key('o')), Some(Action::Open));
+            assert_eq!(map_key(&screen, &Mode::Normal, false, &mut pending, key('f')), Some(Action::Fetch));
+            assert_eq!(map_key(&screen, &Mode::Normal, false, &mut pending, key('o')), Some(Action::Open));
         }
-        assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('f')), None);
-        assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('o')), None);
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('f')), None);
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('o')), None);
     }
 
     #[test]
     fn e_enters_edit_from_library_and_detail_but_not_search() {
         let mut pending = PendingInput::default();
         for screen in [Screen::Library, Screen::Detail] {
-            assert_eq!(map_key(&screen, &Mode::Normal, &mut pending, key('e')), Some(Action::EnterEdit));
+            assert_eq!(map_key(&screen, &Mode::Normal, false, &mut pending, key('e')), Some(Action::EnterEdit));
         }
-        assert_eq!(map_key(&Screen::Search, &Mode::Normal, &mut pending, key('e')), None);
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('e')), None);
     }
 
     #[test]
     fn edit_screen_bindings() {
         let mut pending = PendingInput::default();
-        assert_eq!(map_key(&Screen::Edit, &Mode::Normal, &mut pending, key('w')), Some(Action::SaveEdit));
+        assert_eq!(map_key(&Screen::Edit, &Mode::Normal, false, &mut pending, key('w')), Some(Action::SaveEdit));
         assert_eq!(
-            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key('a')),
+            map_key(&Screen::Edit, &Mode::Normal, false, &mut pending, key('a')),
             Some(Action::EnterInsert(InsertTarget::EditTagAdd))
         );
         assert_eq!(
-            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key('x')),
+            map_key(&Screen::Edit, &Mode::Normal, false, &mut pending, key('x')),
             Some(Action::RemoveLastTag)
         );
         assert_eq!(
-            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key('i')),
+            map_key(&Screen::Edit, &Mode::Normal, false, &mut pending, key('i')),
             Some(Action::EditFocusedField)
         );
         assert_eq!(
-            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
+            map_key(&Screen::Edit, &Mode::Normal, false, &mut pending, key_code(KeyCode::Enter)),
             Some(Action::EditFocusedField)
         );
         assert_eq!(
-            map_key(&Screen::Edit, &Mode::Normal, &mut pending, key_code(KeyCode::Esc)),
+            map_key(&Screen::Edit, &Mode::Normal, false, &mut pending, key_code(KeyCode::Esc)),
             Some(Action::Back)
         );
     }
@@ -279,8 +297,50 @@ mod tests {
     #[test]
     fn edit_only_bindings_are_screen_scoped() {
         let mut pending = PendingInput::default();
-        assert_eq!(map_key(&Screen::Library, &Mode::Normal, &mut pending, key('w')), None);
-        assert_eq!(map_key(&Screen::Library, &Mode::Normal, &mut pending, key('x')), None);
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('w')), None);
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('x')), None);
+    }
+
+    #[test]
+    fn d_triggers_remove_on_library_and_detail_but_not_search() {
+        let mut pending = PendingInput::default();
+        for screen in [Screen::Library, Screen::Detail] {
+            assert_eq!(
+                map_key(&screen, &Mode::Normal, false, &mut pending, key('d')),
+                Some(Action::TriggerRemove)
+            );
+        }
+        assert_eq!(map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key('d')), None);
+    }
+
+    #[test]
+    fn confirm_active_intercepts_every_key_before_anything_else() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(&Screen::Library, &Mode::Normal, true, &mut pending, key('y')),
+            Some(Action::ConfirmYes)
+        );
+        assert_eq!(
+            map_key(&Screen::Library, &Mode::Normal, true, &mut pending, key_code(KeyCode::Enter)),
+            Some(Action::ConfirmYes)
+        );
+        assert_eq!(
+            map_key(&Screen::Library, &Mode::Normal, true, &mut pending, key('n')),
+            Some(Action::ConfirmNo)
+        );
+        assert_eq!(
+            map_key(&Screen::Library, &Mode::Normal, true, &mut pending, key_code(KeyCode::Esc)),
+            Some(Action::ConfirmNo)
+        );
+        // Navigation and every other binding are swallowed while confirming.
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, true, &mut pending, key('j')), None);
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, true, &mut pending, key('q')), None);
+        // Even in Insert mode — confirm always wins.
+        let insert = Mode::Insert(InsertTarget::LibraryFilter);
+        assert_eq!(
+            map_key(&Screen::Library, &insert, true, &mut pending, key('y')),
+            Some(Action::ConfirmYes)
+        );
     }
 
     #[test]
@@ -288,11 +348,11 @@ mod tests {
         let mode = Mode::Insert(InsertTarget::LibraryFilter);
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Library, &mode, &mut pending, key('h')),
+            map_key(&Screen::Library, &mode, false, &mut pending, key('h')),
             Some(Action::InputChar('h'))
         );
         assert_eq!(
-            map_key(&Screen::Library, &mode, &mut pending, key_code(KeyCode::Backspace)),
+            map_key(&Screen::Library, &mode, false, &mut pending, key_code(KeyCode::Backspace)),
             Some(Action::InputBackspace)
         );
     }
@@ -302,11 +362,11 @@ mod tests {
         let mode = Mode::Insert(InsertTarget::LibraryFilter);
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Library, &mode, &mut pending, key_code(KeyCode::Enter)),
+            map_key(&Screen::Library, &mode, false, &mut pending, key_code(KeyCode::Enter)),
             Some(Action::SubmitInput)
         );
         assert_eq!(
-            map_key(&Screen::Library, &mode, &mut pending, key_code(KeyCode::Esc)),
+            map_key(&Screen::Library, &mode, false, &mut pending, key_code(KeyCode::Esc)),
             Some(Action::CancelInput)
         );
     }
@@ -316,7 +376,7 @@ mod tests {
         let mode = Mode::Insert(InsertTarget::LibraryFilter);
         let mut pending = PendingInput::default();
         assert_eq!(
-            map_key(&Screen::Library, &mode, &mut pending, key('j')),
+            map_key(&Screen::Library, &mode, false, &mut pending, key('j')),
             Some(Action::InputChar('j'))
         );
     }

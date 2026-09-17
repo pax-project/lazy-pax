@@ -101,7 +101,10 @@ reopens an item — it should stay accurate rather than aspirational.
 
 ### Remove
 
-- [ ] Remove a declared paper, with explicit confirmation step
+- [x] Remove a declared paper, with explicit confirmation step (`d` on
+      Library or Detail(Declared) opens a y/n `ConfirmPrompt` overlay —
+      the only action in the MVP that gets one, per the DoD's resolved
+      "single keypress" for add vs. "explicit confirmation" for remove)
 
 ### Sync / check
 
@@ -339,42 +342,63 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       title correction — each confirming every *untouched* field (DOI,
       venue, hash, etc.) came back byte-for-byte identical, not just the
       touched ones changing correctly.
-- [ ] 10. Remove (via `ConfirmPrompt` overlay)
+- [x] 10. Remove (via `ConfirmPrompt` overlay) — new `App.confirm:
+      Option<ConfirmPrompt>` (`{ message, on_confirm: Action }`); `keymap`
+      gained a `confirm_active` parameter checked *before* mode/screen
+      dispatch at all, so every other key — including navigation — is
+      swallowed while a prompt is up (`y`/`Enter` → `ConfirmYes`,
+      `n`/`Esc` → `ConfirmNo`). `d` on Library/Detail(Declared) opens the
+      prompt; `ConfirmYes` re-dispatches `on_confirm`
+      (`Action::RemoveConfirmed`) through `apply()`, which re-resolves
+      "the selected paper" at confirm time rather than freezing it in the
+      prompt — safe *only* because `confirm_active` blocks navigation, a
+      dependency made explicit by a test that calls `App::apply()`
+      directly (bypassing `keymap`) to show the target *would* drift if
+      that guard weren't there. `JobKind::RemovePaper` uses
+      `pax_core::remove_paper` — sync/local-only like `EditPaper`, not
+      `spawn_network`. Success returns to Library (same reasoning as
+      Edit — avoid stale screen state) plus a `LoadLibrary` reload.
+      Mechanical note: extending `map_key`'s signature with
+      `confirm_active` touched all ~44 existing call sites in
+      `keymap.rs`'s own tests — done via a scoped `sed` limited to the
+      test module (verified the real signature/implementation were edited
+      by hand, not swept up in the same substitution).
+      Verified: clean build/clippy, 113 unit tests pass (up from 105); ran
+      both paths end-to-end against a real two-paper `research/papers.nix`
+      — `d` → `n` left both papers untouched, `d` → `y` removed exactly
+      the selected one and left the other byte-for-byte intact.
 - [ ] 11. Sync/Check (shared `reports.rs` rendering)
 - [ ] 12. Export (bibtex render + optional file write)
 - [ ] 13. Init-on-launch
 
 ## Critical path
 
-Steps 1–8 of the build order are done (see above) — `lazypax` can search,
-inspect, declare, fetch, and open papers end-to-end, verified against real
-`nix` calls (not just against fixtures). Two things worth carrying forward:
+Steps 1–10 of the build order are done (see above) — `lazypax` can search,
+inspect, declare, fetch, open, edit, and remove papers end-to-end, all
+verified against real `nix`/`pax_core` calls, not just fixtures. Standing
+reminders for whatever comes next:
 
-- **The DSR cursor-query fix in `TerminalGuard::resume()` is a real,
-  general-purpose fix** (use `resize()`, not `clear()`), not a
-  `script`-specific workaround — keep this in mind for any future place
-  that might call `Terminal::clear()` directly.
+- **The DSR cursor-query fix in `TerminalGuard::resume()`** (use `resize()`,
+  not `clear()`) is a real, general-purpose fix, not a `script`-specific
+  workaround — keep it in mind for any future place that might call
+  `Terminal::clear()` directly.
 - **This sandbox's `script`-based pty testing reliably fails on two
-  sequential subprocess/network-touching jobs run in one session**
-  (confirmed twice now: search-then-add in step 6, fetch-then-open here) —
-  always cross-check a suspicious multi-job pty failure against the
-  standalone-diagnostic technique (driving `job::spawn` directly, no pty)
-  before assuming a code defect. A single job per session, or the
-  diagnostic binary, are the two verification paths that reliably work
-  here.
+  sequential *subprocess/network-touching* jobs run in one session**
+  (confirmed with search-then-add in step 6 and fetch-then-open in step 8);
+  sync/local-only jobs (`EditPaper`, `RemovePaper`, `LoadLibrary`,
+  `FetchPaper` alone) don't hit this. Cross-check a suspicious multi-job pty
+  failure against the standalone-diagnostic technique (driving `job::spawn`
+  directly, no pty) before assuming a code defect.
+- **Dirty-tracking, not emptiness, decides what a save includes** — any
+  field prefilled from existing data needs "changed from original" to
+  decide whether it's sent, not "is this non-empty" (caught in step 9, see
+  its entry above for the concrete bug this avoided).
+- **Confirmation overlays only work because `keymap`'s `confirm_active`
+  check runs before everything else** — `App::apply()` itself has no such
+  guard (see step 10's `keymap_not_app_is_what_keeps_the_confirmed_target_
+  from_drifting` test); any new event-entry path into `App::update()` that
+  bypassed `keymap` would reopen this.
 
-Steps 1–9 are now done. Edit confirmed the Insert-mode machinery generalizes
-cleanly to a 7-field form (one `InsertTarget` variant + one shared buffer
-per field, mechanical to extend) and caught a real dirty-tracking bug via
-its own unit tests before it ever ran against a real library — worth
-remembering as a pattern: any future field prefilled from existing data
-needs "changed from original", not "non-empty", to decide whether to
-include it in a save. `JobKind::EditPaper` is sync/local-only like
-`LoadLibrary`/`FetchPaper` (not `spawn_network`), and reliable under
-`script` even as a same-session second job, unlike the subprocess-launching
-jobs — consistent with the pattern that only subprocess/network jobs hit
-that particular pty limitation.
-
-Next: step 10, Remove — the one action that gets an explicit `ConfirmPrompt`
-y/n overlay, via `pax_core::remove_paper` (sync/local-only, same job
-pattern as Edit).
+Next: step 11, Sync/Check — library-wide actions with a per-paper summary
+report, sharing one `reports.rs` rendering for both `Vec<SyncReport>` and
+`Vec<CheckReport>`.

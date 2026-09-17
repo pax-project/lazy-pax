@@ -50,12 +50,22 @@ pub struct PendingInput {
     pub g_pressed: bool,
 }
 
+/// A y/n confirmation overlay. `on_confirm` is re-dispatched through
+/// `apply()` on `y`, exactly as if the user had triggered it directly —
+/// the only action that currently reaches this is `Action::RemoveConfirmed`,
+/// but nothing here is remove-specific.
+pub struct ConfirmPrompt {
+    pub message: String,
+    pub on_confirm: Action,
+}
+
 pub struct App {
     pub screen: Screen,
     pub screen_stack: Vec<Screen>,
     pub mode: Mode,
     pub should_quit: bool,
     pub pending: PendingInput,
+    pub confirm: Option<ConfirmPrompt>,
     pub status: StatusBar,
     /// Whether a background job is currently in flight. MVP keeps this to
     /// one job at a time rather than a queue — a job-triggering action
@@ -78,6 +88,7 @@ impl App {
             mode: Mode::Normal,
             should_quit: false,
             pending: PendingInput::default(),
+            confirm: None,
             status: StatusBar::default(),
             job_running: false,
             library: LibraryScreen::default(),
@@ -123,7 +134,7 @@ impl App {
         match msg {
             Message::Tick => Vec::new(),
             Message::Input(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                match crate::keymap::map_key(&self.screen, &self.mode, &mut self.pending, key) {
+                match crate::keymap::map_key(&self.screen, &self.mode, self.confirm.is_some(), &mut self.pending, key) {
                     Some(action) => self.apply(action),
                     None => Vec::new(),
                 }
@@ -231,7 +242,35 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::TriggerRemove => {
+                if let Some(citation_key) = self.selected_declared_key() {
+                    self.confirm = Some(ConfirmPrompt {
+                        message: format!("Remove {citation_key}?"),
+                        on_confirm: Action::RemoveConfirmed,
+                    });
+                }
+                Vec::new()
+            }
+            Action::RemoveConfirmed => self.remove_selected(),
+            Action::ConfirmYes => match self.confirm.take() {
+                Some(prompt) => self.apply(prompt.on_confirm),
+                None => Vec::new(),
+            },
+            Action::ConfirmNo => {
+                self.confirm = None;
+                Vec::new()
+            }
         }
+    }
+
+    fn remove_selected(&mut self) -> Vec<Effect> {
+        let Some(citation_key) = self.selected_declared_key() else {
+            return Vec::new();
+        };
+        if !self.start_job() {
+            return Vec::new();
+        }
+        vec![Effect::Spawn(JobKind::RemovePaper(citation_key))]
     }
 
     fn add_selected_candidate(&mut self) -> Vec<Effect> {
@@ -478,6 +517,16 @@ impl App {
                     // paper; rather than patch every screen's stale copy of
                     // it, just return to Library, where the reload below
                     // picks up the current state.
+                    self.screen = Screen::Library;
+                    self.screen_stack.clear();
+                    self.job_running = true;
+                    return vec![Effect::Spawn(JobKind::LoadLibrary)];
+                }
+                Err(e) => self.status.error(format!("{citation_key}: {e}")),
+            },
+            JobOutcome::Removed { citation_key, result } => match result {
+                Ok(()) => {
+                    self.status.success(format!("Removed {citation_key}"));
                     self.screen = Screen::Library;
                     self.screen_stack.clear();
                     self.job_running = true;
@@ -1118,5 +1167,123 @@ mod tests {
         let before = app.edit.tags.len();
         app.apply(Action::RemoveLastTag);
         assert_eq!(app.edit.tags.len(), before.saturating_sub(1));
+    }
+
+    #[test]
+    fn trigger_remove_opens_a_confirm_prompt_without_removing_anything() {
+        let mut app = with_two_papers();
+        app.library.selected = 0; // turing1936
+        let effects = app.apply(Action::TriggerRemove);
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+        assert!(matches!(
+            &app.confirm,
+            Some(prompt) if prompt.message.contains("turing1936")
+        ));
+    }
+
+    #[test]
+    fn trigger_remove_is_a_no_op_on_search() {
+        let mut app = with_search_results();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::TriggerRemove);
+        assert!(app.confirm.is_none());
+    }
+
+    #[test]
+    fn confirm_no_dismisses_the_prompt_without_spawning_a_job() {
+        let mut app = with_two_papers();
+        app.apply(Action::TriggerRemove);
+        assert!(app.confirm.is_some());
+        let effects = app.apply(Action::ConfirmNo);
+        assert!(app.confirm.is_none());
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn confirm_yes_dispatches_the_remove_job_for_the_confirmed_paper() {
+        let mut app = with_two_papers();
+        app.library.selected = 1; // hewitt1973
+        app.apply(Action::TriggerRemove);
+        let effects = app.apply(Action::ConfirmYes);
+        assert!(app.confirm.is_none());
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::RemovePaper(key))] if key == "hewitt1973"
+        ));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn confirm_yes_with_no_pending_prompt_is_a_no_op() {
+        let mut app = with_two_papers();
+        let effects = app.apply(Action::ConfirmYes);
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn keymap_not_app_is_what_keeps_the_confirmed_target_from_drifting() {
+        // ConfirmYes re-resolves "the selected paper" at confirm time
+        // rather than freezing it in the prompt - safe only because
+        // keymap.rs's confirm_active check stops any other action
+        // (including navigation) from reaching App::apply() while a
+        // prompt is up. App::apply() itself has no such guard, so calling
+        // it directly (bypassing keymap, as real input never would while
+        // confirming) does let the target drift - this documents that the
+        // safety property lives in keymap, not here, for anyone tempted to
+        // add a second path into App::update() that skips it.
+        let mut app = with_two_papers();
+        app.library.selected = 0; // turing1936
+        app.apply(Action::TriggerRemove);
+        app.apply(Action::MoveDown); // only reachable by bypassing keymap
+        let effects = app.apply(Action::ConfirmYes);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::RemovePaper(key))] if key == "hewitt1973"
+        ));
+    }
+
+    #[test]
+    fn successful_remove_shows_success_returns_to_library_and_reloads() {
+        let mut app = with_two_papers();
+        app.apply(Action::TriggerRemove);
+        app.apply(Action::ConfirmYes);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Removed {
+                citation_key: "turing1936".to_string(),
+                result: Ok(()),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Success, msg)) if msg.contains("turing1936")
+        ));
+        assert!(matches!(app.screen, Screen::Library));
+        assert!(app.screen_stack.is_empty());
+        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn failed_remove_shows_an_error() {
+        let mut app = with_two_papers();
+        app.apply(Action::TriggerRemove);
+        app.apply(Action::ConfirmYes);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Removed {
+                citation_key: "turing1936".to_string(),
+                result: Err(PaxError::NoSuchPaper("turing1936".to_string())),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
     }
 }

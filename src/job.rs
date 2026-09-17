@@ -26,6 +26,7 @@ pub enum JobKind {
     FetchPaper(String),
     ResolveForOpen(String),
     EditPaper { citation_key: String, edits: PaperEdits },
+    RemovePaper(String),
 }
 
 pub enum JobOutcome {
@@ -44,6 +45,10 @@ pub enum JobOutcome {
         result: Result<PathBuf, OpenError>,
     },
     Edited {
+        citation_key: String,
+        result: Result<(), PaxError>,
+    },
+    Removed {
         citation_key: String,
         result: Result<(), PaxError>,
     },
@@ -118,6 +123,16 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let _ = tx.send(Message::Job(id, JobOutcome::Edited { citation_key, result }));
             });
         }
+        JobKind::RemovePaper(citation_key) => {
+            tokio::spawn(async move {
+                let root = ctx.root.clone();
+                let key = citation_key.clone();
+                let result = tokio::task::spawn_blocking(move || pax_core::remove_paper(&key, &root))
+                    .await
+                    .expect("remove_paper task panicked");
+                let _ = tx.send(Message::Job(id, JobOutcome::Removed { citation_key, result }));
+            });
+        }
         network_kind @ (JobKind::SearchAll(_)
         | JobKind::SearchByAuthor(_)
         | JobKind::SearchByDoi(_)
@@ -156,7 +171,11 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
             let result = pax_core::add_candidate(&candidate_id, &ctx.root, &ctx.config).await;
             JobOutcome::Added(result)
         }
-        JobKind::LoadLibrary | JobKind::FetchPaper(_) | JobKind::ResolveForOpen(_) | JobKind::EditPaper { .. } => {
+        JobKind::LoadLibrary
+        | JobKind::FetchPaper(_)
+        | JobKind::ResolveForOpen(_)
+        | JobKind::EditPaper { .. }
+        | JobKind::RemovePaper(_) => {
             unreachable!("spawn_network is only called with network JobKinds")
         }
     }
