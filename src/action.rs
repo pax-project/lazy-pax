@@ -3,4 +3,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Quit,
+    MoveDown,
+    MoveUp,
+    GoTop,
+    GoBottom,
 }

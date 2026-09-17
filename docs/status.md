@@ -6,27 +6,36 @@ reopens an item — it should stay accurate rather than aspirational.
 
 ## Architecture
 
-- [ ] `pax-core` added as a dependency (path or git)
-- [ ] `lazypax` never shells out to the `pax` binary
-- [ ] All `research/` reads/writes go through `pax_core` (`Library`,
+- [x] `pax-core` added as a dependency (path or git)
+- [x] `lazypax` never shells out to the `pax` binary
+- [x] All `research/` reads/writes go through `pax_core` (`Library`,
       `add_candidate`, `edit_paper`, `remove_paper`, `fetch_paper`,
       `check_library`, `sync_library`, `resolve_artifact_path`,
       `bibtex::render`, ...) — no hand-parsing/writing of `papers.nix`
+      (so far: `Library::load` only, via `job::load_library`)
 - [ ] A library produced/modified by `lazypax` stays fully usable from the
-      plain `pax` CLI, and vice versa
+      plain `pax` CLI, and vice versa (nothing writes yet — first checkable
+      once add/edit/remove/fetch land)
 - [ ] All provider network calls go through `pax_core`'s `Provider` impls —
-      no direct provider API calls from `lazypax`
-- [ ] Provider search / `nix` calls (`fetch`/`open`/`check`/`sync`) run off
-      the UI thread/event loop
+      no direct provider API calls from `lazypax` (no provider calls made
+      yet — step 4)
+- [x] Provider search / `nix` calls (`fetch`/`open`/`check`/`sync`) run off
+      the UI thread/event loop (`job::spawn` wraps blocking calls in
+      `tokio::task::spawn_blocking`; established with `LoadLibrary`, applies
+      to every future `JobKind`)
 
 ## Screens / features
 
 ### Library view
 
-- [ ] Lists declared papers (citation key, title, authors, year)
-- [ ] Fetched vs. not-fetched shown at a glance
+- [x] Lists declared papers (citation key, title, authors, year)
+- [x] Fetched vs. not-fetched shown at a glance (✓/✗ column from
+      `artifact.hash.is_some()`)
 - [ ] Incremental local filtering by author/year/tag
-- [ ] Explicit empty-library state
+- [x] Explicit empty-library state (and a distinct
+      not-yet-initialized-here state, ahead of the DoD's own wording, since
+      `PaxError::Io(NotFound)` needed handling to avoid a raw error on first
+      launch)
 
 ### Search view
 
@@ -122,7 +131,17 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       tick + `mpsc` select, `q` to quit. No `pax_core` calls yet. Verified:
       clean build/clippy, keymap unit tests pass, ran in a pty and confirmed
       alt-screen/raw-mode enter and exit are correctly paired on quit.
-- [ ] 2. Library view, read-only, against a fixture `research/papers.nix`
+- [x] 2. Library view, read-only, against a fixture `research/papers.nix` —
+      `job.rs`/`pax_ctx.rs` added, `LoadLibrary` job dispatched on startup.
+      Distinguishes not-initialized (`PaxError::Io(NotFound)`), empty, and
+      loaded (table with citation key/title/authors/year/fetched-glyph)
+      states; `j`/`k`/`gg`/`G` selection navigation. Verified: clean
+      build/clippy, 14 unit tests (keymap, `App::update` job-outcome
+      handling, `LibraryScreen` selection wrap-around) all pass; ran against
+      hand-written fixtures for all three states in a pty with clean exit,
+      no panics. Note: this sandbox's pty doesn't report a real terminal
+      size, so the actual rendered layout couldn't be visually confirmed
+      here — worth a quick `cargo run` in a real terminal to eyeball it.
 - [ ] 3. In-memory `/`-filter via `filter_papers`
 - [ ] 4. Search view + provider-grouped rendering
 - [ ] 5. Detail view for a `CandidateWork`
@@ -137,8 +156,9 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
 
 ## Critical path
 
-Step 1 of the build order is done (see above) — `src/main.rs` now runs a
-real event loop rendering a placeholder Library screen; still zero calls
-into `pax_core`. Next: step 2, a read-only library view against a fixture
-`research/papers.nix`, introducing `job.rs`/`pax_ctx.rs` and the
-`LoadLibrary` job.
+Steps 1–2 of the build order are done (see above) — `lazypax` now loads a
+real `research/papers.nix` on startup via `pax_core::Library::load` (off the
+UI thread) and renders it as a navigable, selection-highlighted table, with
+distinct not-initialized/empty/loaded states. Next: step 3, the in-memory
+`/`-filter via `filter_papers` (no new job needed — it's pure and operates
+on the already-loaded `Vec<Paper>`).

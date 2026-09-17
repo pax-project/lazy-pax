@@ -1,20 +1,29 @@
-use ratatui::layout::{Alignment, Rect};
-use ratatui::widgets::{Block, Borders, Paragraph};
+pub mod library;
+
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Style};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::{App, Screen};
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let area = frame.area();
+    let [content, status] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
+
     match app.screen {
-        Screen::Library => draw_library(frame, area),
+        Screen::Library => library::draw(frame, &app.library, content),
     }
+
+    draw_status_bar(frame, app, status);
 }
 
-fn draw_library(frame: &mut Frame, area: Rect) {
-    let block = Block::default().title(" lazypax ").borders(Borders::ALL);
-    let paragraph = Paragraph::new("Library is empty.\n\nPress q to quit.")
-        .block(block)
-        .alignment(Alignment::Center);
-    frame.render_widget(paragraph, area);
+fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let text = app.status.message.as_deref().unwrap_or("q: quit");
+    let style = if app.status.message.is_some() {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default()
+    };
+    frame.render_widget(Paragraph::new(text).style(style), area);
 }

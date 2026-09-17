@@ -1,11 +1,15 @@
 mod action;
 mod app;
+mod job;
 mod keymap;
 mod message;
+mod pax_ctx;
+mod status;
 mod terminal;
 mod ui;
 
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::execute;
@@ -13,7 +17,9 @@ use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use tokio::sync::mpsc;
 
 use app::App;
+use job::JobId;
 use message::{Effect, Message};
+use pax_ctx::PaxCtx;
 use terminal::TerminalGuard;
 
 /// Restores the terminal before the default panic hook runs, so a panic
@@ -39,15 +45,37 @@ fn spawn_input_thread(tx: mpsc::UnboundedSender<Message>) {
     });
 }
 
+fn handle_effect(
+    effect: Effect,
+    ctx: &PaxCtx,
+    tx: &mpsc::UnboundedSender<Message>,
+    next_job_id: &mut JobId,
+) {
+    match effect {
+        Effect::Quit => {}
+        Effect::Spawn(kind) => {
+            *next_job_id += 1;
+            job::spawn(*next_job_id, kind, ctx.clone(), tx.clone());
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
     install_panic_hook();
     let mut terminal_guard = TerminalGuard::new()?;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-    spawn_input_thread(tx);
+    spawn_input_thread(tx.clone());
 
+    let ctx = PaxCtx::from_env(PathBuf::from("."));
+    let mut next_job_id: JobId = 0;
     let mut app = App::new();
+
+    for effect in app.init_effects() {
+        handle_effect(effect, &ctx, &tx, &mut next_job_id);
+    }
+
     let mut tick = tokio::time::interval(Duration::from_millis(100));
 
     loop {
@@ -57,9 +85,7 @@ async fn main() -> io::Result<()> {
         };
 
         for effect in app.update(msg) {
-            match effect {
-                Effect::Quit => {}
-            }
+            handle_effect(effect, &ctx, &tx, &mut next_job_id);
         }
 
         terminal_guard.terminal.draw(|frame| ui::draw(frame, &app))?;
