@@ -49,7 +49,9 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         }
         KeyCode::Char('S') if matches!(screen, Screen::Library) => Some(Action::GoToSearch),
         KeyCode::Tab if matches!(screen, Screen::Search) => Some(Action::CycleSearchMode),
-        KeyCode::Enter | KeyCode::Char('l') if matches!(screen, Screen::Search) => Some(Action::OpenDetail),
+        KeyCode::Enter | KeyCode::Char('l') if matches!(screen, Screen::Search | Screen::Library) => {
+            Some(Action::OpenDetail)
+        }
         KeyCode::Char('a') if matches!(screen, Screen::Detail) => Some(Action::AddCandidate),
         _ => None,
     }
@@ -160,18 +162,20 @@ mod tests {
     }
 
     #[test]
-    fn enter_and_l_open_detail_on_search_screen_only() {
+    fn enter_and_l_open_detail_on_search_and_library_but_not_detail() {
         let mut pending = PendingInput::default();
+        for screen in [Screen::Search, Screen::Library] {
+            assert_eq!(
+                map_key(&screen, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
+                Some(Action::OpenDetail)
+            );
+            assert_eq!(
+                map_key(&screen, &Mode::Normal, &mut pending, key('l')),
+                Some(Action::OpenDetail)
+            );
+        }
         assert_eq!(
-            map_key(&Screen::Search, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
-            Some(Action::OpenDetail)
-        );
-        assert_eq!(
-            map_key(&Screen::Search, &Mode::Normal, &mut pending, key('l')),
-            Some(Action::OpenDetail)
-        );
-        assert_eq!(
-            map_key(&Screen::Library, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
+            map_key(&Screen::Detail, &Mode::Normal, &mut pending, key_code(KeyCode::Enter)),
             None
         );
     }

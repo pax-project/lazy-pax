@@ -59,8 +59,10 @@ reopens an item — it should stay accurate rather than aspirational.
 - [x] Full detail for an unresolved search result (abstract, PDF sources,
       in-library status) before adding — mirrors the `pax` CLI's own `show`
       field set/wording so a paper reads the same in both places
-- [ ] Full detail for a declared paper (identity, artifact status + hash,
-      citation key, tags, notes)
+- [x] Full detail for a declared paper (identity, artifact status + hash,
+      citation key, tags, notes) — mirrors `pax show <key>`'s own field
+      set/wording, same as the candidate detail does for `pax show
+      provider:id`
 
 ### Add / declare
 
@@ -233,7 +235,17 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
       code path end-to-end outside `script`, and the 58 unit tests covering
       `App`'s reaction to every outcome. Worth a real-terminal `cargo run`
       sanity check on your end; flagging rather than papering over it.
-- [ ] 7. Detail view for a declared `Paper`
+- [x] 7. Detail view for a declared `Paper` — reused `Screen::Detail`/
+      `OpenDetail` from step 5 rather than adding new machinery:
+      `DetailSubject` gained a `Declared(Paper)` variant, and `Enter`/`l`
+      now opens detail from Library too (previously Search-only), via a new
+      `LibraryScreen::selected_paper()` mirroring `selected_candidate()`.
+      No new job — the paper is already in memory from `LoadLibrary`. Field
+      set/wording mirrors `pax show <key>`. Verified: clean build/clippy,
+      66 unit tests pass (up from 58); ran Library → Detail (via both
+      `Enter` and `l`) → back → quit end-to-end against a two-paper fixture
+      with a clean exit and no panics (pure local state, so unaffected by
+      step 6's `script`-pty network-job caveat).
 - [ ] 8. Fetch + Open (suspend/resume bracket + `resolve_for_open`)
 - [ ] 9. Edit (tags/notes, then rename + identity corrections)
 - [ ] 10. Remove (via `ConfirmPrompt` overlay)
@@ -243,15 +255,17 @@ any `pax-core` API change driven by `lazypax`'s convenience alone.
 
 ## Critical path
 
-Steps 1–6 of the build order are done (see above) — `lazypax` can now
-search, inspect, and declare papers end-to-end (verified against the real
-`job.rs` outside the pty test harness; see step 6's note on the `script`
-limitation encountered here). `job::spawn_network`'s dedicated-OS-thread
-pattern (renamed from `spawn_search` once `add_candidate` joined it) is
-required for *any* job awaiting a `pax_core` async fn touching Crossref —
-`show_reference` (step 7) will need it too. The `App::job_running` guard
-introduced in step 6 is general-purpose, not add-specific — any future
-job-triggering action (fetch, sync, check, ...) should route through
-`start_job()` the same way. Next: step 7, a detail view for a *declared*
-`Paper` (identity, artifact/fetch status, citation key, tags, notes) —
-reachable from the Library screen, no new job needed.
+Steps 1–7 of the build order are done (see above) — `lazypax` can search,
+inspect (both unresolved candidates and declared papers), and declare
+papers end-to-end. `Screen::Detail` now serves two subjects
+(`Candidate`/`Declared`) through one screen, reached from either Search or
+Library — worth keeping in mind for step 8 (Fetch/Open), which is also
+triggered from a paper's detail view and needs to know which subject it's
+looking at (only `Declared` papers are fetchable/openable). Reminders
+carried over: `job::spawn_network`'s dedicated-thread pattern is required
+for any job awaiting a `pax_core` async fn touching Crossref
+(`show_reference`, when a future step needs it); `App::job_running`'s guard
+is general-purpose — route any new job-triggering action through
+`start_job()`. Next: step 8, Fetch + Open — the first step that shells out
+to `nix` itself, and the first to need the terminal suspend/resume bracket
+around the external PDF viewer.

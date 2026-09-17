@@ -47,9 +47,12 @@ fn hint_text(app: &App) -> String {
                 format!("Filter: {}▏  (Enter: apply, Esc: cancel)", app.library.filter_buffer)
             }
             _ if !app.library.query.is_empty() => {
-                format!("Filter: {}  (/: edit, Esc: clear, S: search, q: quit)", app.library.query)
+                format!(
+                    "Filter: {}  (Enter/l: view, /: edit, Esc: clear, S: search, q: quit)",
+                    app.library.query
+                )
             }
-            _ => "/: filter  S: search  q: quit".to_string(),
+            _ => "Enter/l: view  /: filter  S: search  q: quit".to_string(),
         },
         Screen::Search => "Enter/l: view  Esc: back  q: quit".to_string(),
         Screen::Detail => match &app.detail.subject {
@@ -57,7 +60,7 @@ fn hint_text(app: &App) -> String {
                 "a: add anyway (already in library)  Esc: back  q: quit".to_string()
             }
             Some(DetailSubject::Candidate { in_library: false, .. }) => "a: add  Esc: back  q: quit".to_string(),
-            None => "Esc: back  q: quit".to_string(),
+            Some(DetailSubject::Declared(_)) | None => "Esc: back  q: quit".to_string(),
         },
     }
 }

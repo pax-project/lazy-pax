@@ -69,6 +69,11 @@ impl LibraryScreen {
         }
     }
 
+    /// The currently-highlighted paper, for opening a detail view on it.
+    pub fn selected_paper(&self) -> Option<Paper> {
+        self.visible_papers()?.get(self.selected).cloned()
+    }
+
     pub fn clear_filter(&mut self) {
         self.query.clear();
         self.selected = 0;
@@ -293,5 +298,21 @@ mod tests {
         screen.query = "hewitt".to_string();
         screen.move_down(); // only one match -> wraps to itself
         assert_eq!(screen.selected, 0);
+    }
+
+    #[test]
+    fn selected_paper_reflects_the_filtered_view() {
+        let mut screen = loaded(fixture());
+        screen.selected = 1;
+        assert_eq!(screen.selected_paper().unwrap().local.citation_key, "hewitt1973");
+
+        screen.query = "turing".to_string();
+        screen.selected = 0;
+        assert_eq!(screen.selected_paper().unwrap().local.citation_key, "turing1936");
+    }
+
+    #[test]
+    fn selected_paper_is_none_before_the_library_loads() {
+        assert!(LibraryScreen::default().selected_paper().is_none());
     }
 }

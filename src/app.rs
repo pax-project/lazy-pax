@@ -184,10 +184,16 @@ impl App {
                 Vec::new()
             }
             Action::OpenDetail => {
-                if self.screen == Screen::Search
-                    && let Some((work, in_library)) = self.search.selected_candidate()
-                {
-                    self.detail.subject = Some(DetailSubject::Candidate { work, in_library });
+                let subject = match self.screen {
+                    Screen::Search => self
+                        .search
+                        .selected_candidate()
+                        .map(|(work, in_library)| DetailSubject::Candidate { work, in_library }),
+                    Screen::Library => self.library.selected_paper().map(DetailSubject::Declared),
+                    Screen::Detail => None,
+                };
+                if let Some(subject) = subject {
+                    self.detail.subject = Some(subject);
                     self.push_screen(Screen::Detail);
                 }
                 Vec::new()
@@ -536,11 +542,32 @@ mod tests {
     }
 
     #[test]
-    fn open_detail_is_a_no_op_outside_search() {
+    fn open_detail_is_a_no_op_when_nothing_is_loaded_yet() {
         let mut app = App::new();
         app.apply(Action::OpenDetail);
         assert!(matches!(app.screen, Screen::Library));
         assert!(app.detail.subject.is_none());
+    }
+
+    #[test]
+    fn open_detail_from_library_shows_the_selected_declared_paper() {
+        let mut app = with_two_papers();
+        app.library.selected = 1; // hewitt1973
+        app.apply(Action::OpenDetail);
+        assert!(matches!(app.screen, Screen::Detail));
+        assert!(matches!(
+            app.detail.subject,
+            Some(DetailSubject::Declared(ref p)) if p.local.citation_key == "hewitt1973"
+        ));
+    }
+
+    #[test]
+    fn back_from_declared_detail_returns_to_library() {
+        let mut app = with_two_papers();
+        app.apply(Action::OpenDetail);
+        assert!(matches!(app.screen, Screen::Detail));
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Library));
     }
 
     #[test]
