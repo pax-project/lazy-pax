@@ -45,6 +45,8 @@ pub enum InsertTarget {
     EditAuthors,
     EditYear,
     EditDoi,
+    EditSourceUrl,
+    UploadPdfPath,
     ExportPath,
 }
 
@@ -147,7 +149,10 @@ impl App {
     /// `Effect`s the main loop should perform. No I/O happens here directly.
     pub fn update(&mut self, msg: Message) -> Vec<Effect> {
         match msg {
-            Message::Tick => Vec::new(),
+            Message::Tick => {
+                self.status.clear_if_expired();
+                Vec::new()
+            }
             Message::Input(Event::Key(key)) if key.kind == KeyEventKind::Press => {
                 match crate::keymap::map_key(&self.screen, &self.mode, self.confirm.is_some(), &mut self.pending, key) {
                     Some(action) => self.apply(action),
@@ -537,6 +542,7 @@ impl App {
                 self.export.buffer.clear();
                 Vec::new()
             }
+            Mode::Insert(InsertTarget::UploadPdfPath) => self.submit_upload_pdf_path(),
             Mode::Insert(target) => {
                 self.edit.commit_field_edit(target);
                 Vec::new()
@@ -545,6 +551,28 @@ impl App {
         };
         self.mode = Mode::Normal;
         effects
+    }
+
+    /// The path just typed into the Edit screen's "upload PDF" prompt —
+    /// dispatches an upload job rather than writing into an `EditScreen`
+    /// field directly, since a local path isn't itself a value to persist,
+    /// only the resulting release URL is.
+    fn submit_upload_pdf_path(&mut self) -> Vec<Effect> {
+        let path = self.edit.buffer.trim().to_string();
+        self.edit.buffer.clear();
+        if path.is_empty() {
+            self.status.error("No file path entered");
+            return Vec::new();
+        }
+        if !self.start_job() {
+            return Vec::new();
+        }
+        let citation_key = self.edit.citation_key.clone();
+        self.status.pending(format!("Uploading {path} to GitHub…"));
+        vec![Effect::Spawn(JobKind::UploadPdf {
+            citation_key,
+            local_path: std::path::PathBuf::from(path),
+        })]
     }
 
     fn submit_search_query(&mut self) -> Vec<Effect> {
@@ -673,6 +701,21 @@ impl App {
                 return vec![Effect::Spawn(JobKind::LoadLibrary)];
             }
             JobOutcome::Initialized(Err(e)) => self.status.error(e.to_string()),
+            JobOutcome::Uploaded { citation_key, result } => match result {
+                Ok(url) => {
+                    self.status.success(format!("Uploaded {citation_key}.pdf — source set"));
+                    // Only patch the Edit screen's own copy if it's still
+                    // showing the same paper — the user may have navigated
+                    // away while this job was in flight (same guard used
+                    // for a successful fetch's detail patch).
+                    if self.screen == Screen::Edit && self.edit.citation_key == citation_key {
+                        self.edit.apply_uploaded_source_url(url);
+                    }
+                    self.job_running = true;
+                    return vec![Effect::Spawn(JobKind::LoadLibrary)];
+                }
+                Err(e) => self.status.error(format!("{citation_key}: {e}")),
+            },
         }
         Vec::new()
     }
@@ -1272,6 +1315,120 @@ mod tests {
             Some((crate::status::StatusKind::Error, _))
         ));
         assert!(matches!(app.screen, Screen::Edit));
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn submitting_an_empty_upload_path_shows_an_error_and_spawns_nothing() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit);
+        app.apply(Action::EnterInsert(InsertTarget::UploadPdfPath));
+        let effects = app.apply(Action::SubmitInput);
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+    }
+
+    #[test]
+    fn entering_a_path_and_submitting_spawns_the_upload_job() {
+        let mut app = with_two_papers();
+        app.library.selected = 1; // hewitt1973
+        app.apply(Action::EnterEdit);
+        app.apply(Action::EnterInsert(InsertTarget::UploadPdfPath));
+        for c in "/home/me/hewitt1973.pdf".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        let effects = app.apply(Action::SubmitInput);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::UploadPdf { citation_key, local_path })]
+                if citation_key == "hewitt1973" && local_path == std::path::Path::new("/home/me/hewitt1973.pdf")
+        ));
+        assert!(app.job_running);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+    }
+
+    #[test]
+    fn successful_upload_shows_success_patches_the_edit_screen_and_reloads() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit); // turing1936
+        app.apply(Action::EnterInsert(InsertTarget::UploadPdfPath));
+        for c in "/home/me/turing.pdf".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        app.apply(Action::SubmitInput);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Uploaded {
+                citation_key: "turing1936".to_string(),
+                result: Ok("https://github.com/x/y/releases/download/papers/turing1936.pdf".to_string()),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Success, msg)) if msg.contains("turing1936")
+        ));
+        assert_eq!(
+            app.edit.source_url,
+            "https://github.com/x/y/releases/download/papers/turing1936.pdf"
+        );
+        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn successful_upload_does_not_patch_a_different_papers_edit_screen() {
+        // Regression guard, same shape as fetch's: the upload was triggered
+        // for turing1936, but the user has since opened hewitt1973's edit
+        // screen. The stale outcome must not overwrite hewitt1973's fields.
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit); // turing1936
+        app.apply(Action::EnterInsert(InsertTarget::UploadPdfPath));
+        for c in "/home/me/turing.pdf".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        app.apply(Action::SubmitInput);
+
+        app.apply(Action::Back);
+        app.library.selected = 1; // hewitt1973
+        app.apply(Action::EnterEdit);
+
+        app.update(Message::Job(
+            2,
+            JobOutcome::Uploaded {
+                citation_key: "turing1936".to_string(),
+                result: Ok("https://github.com/x/y/releases/download/papers/turing1936.pdf".to_string()),
+            },
+        ));
+        assert_eq!(app.edit.citation_key, "hewitt1973");
+        assert_eq!(app.edit.source_url, "");
+    }
+
+    #[test]
+    fn failed_upload_shows_an_error() {
+        let mut app = with_two_papers();
+        app.apply(Action::EnterEdit);
+        app.apply(Action::EnterInsert(InsertTarget::UploadPdfPath));
+        for c in "/home/me/turing.pdf".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        app.apply(Action::SubmitInput);
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Uploaded {
+                citation_key: "turing1936".to_string(),
+                result: Err(PaxError::Upload("gh: not authenticated".to_string())),
+            },
+        ));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg)) if msg.contains("turing1936")
+        ));
         assert!(effects.is_empty());
         assert!(!app.job_running);
     }

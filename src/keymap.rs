@@ -90,6 +90,7 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         KeyCode::Char('w') if matches!(screen, Screen::Edit) => Some(Action::SaveEdit),
         KeyCode::Char('a') if matches!(screen, Screen::Edit) => Some(Action::EnterInsert(InsertTarget::EditTagAdd)),
         KeyCode::Char('x') if matches!(screen, Screen::Edit) => Some(Action::RemoveLastTag),
+        KeyCode::Char('u') if matches!(screen, Screen::Edit) => Some(Action::EnterInsert(InsertTarget::UploadPdfPath)),
         KeyCode::Char('i') | KeyCode::Enter if matches!(screen, Screen::Edit) => Some(Action::EditFocusedField),
         _ => None,
     }
@@ -298,6 +299,10 @@ mod tests {
             Some(Action::EditFocusedField)
         );
         assert_eq!(
+            map_key(&Screen::Edit, &Mode::Normal, false, &mut pending, key('u')),
+            Some(Action::EnterInsert(InsertTarget::UploadPdfPath))
+        );
+        assert_eq!(
             map_key(&Screen::Edit, &Mode::Normal, false, &mut pending, key_code(KeyCode::Enter)),
             Some(Action::EditFocusedField)
         );
@@ -312,6 +317,7 @@ mod tests {
         let mut pending = PendingInput::default();
         assert_eq!(map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('w')), None);
         assert_eq!(map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('x')), None);
+        assert_eq!(map_key(&Screen::Library, &Mode::Normal, false, &mut pending, key('u')), None);
     }
 
     #[test]

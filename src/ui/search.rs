@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use pax_core::{CandidateWork, ProviderError, ProviderId};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
+
+use crate::ui::SELECTED_ROW_STYLE;
 
 /// Fixed iteration order shared with the `pax` CLI's own `search`/`show`
 /// commands, so results render in the same provider order a `pax` user
@@ -201,7 +202,7 @@ fn render_list(frame: &mut Frame, items: &[CandidateWork], known_dois: &HashSet<
         .collect();
     let list = List::new(list_items)
         .block(Block::default().title(" lazypax — search ").borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(SELECTED_ROW_STYLE);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
 }

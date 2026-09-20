@@ -32,6 +32,7 @@ pub enum JobKind {
     Check,
     ExportToFile { path: PathBuf, content: String },
     Init,
+    UploadPdf { citation_key: String, local_path: PathBuf },
 }
 
 pub enum JobOutcome {
@@ -66,6 +67,13 @@ pub enum JobOutcome {
     /// `pax_core::init_library`'s real return type — `std::io::Error`, not
     /// `PaxError` (confirmed against its source, not assumed).
     Initialized(std::io::Result<()>),
+    Uploaded {
+        citation_key: String,
+        /// The resulting release-asset URL on success — already persisted
+        /// as the paper's `source_url` by the time this arrives (see
+        /// `upload_pdf`), not just returned for display.
+        result: Result<String, PaxError>,
+    },
 }
 
 /// Why a declared paper couldn't be resolved to an openable path. Mirrors
@@ -135,6 +143,16 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                     .await
                     .expect("edit_paper task panicked");
                 let _ = tx.send(Message::Job(id, JobOutcome::Edited { citation_key, result }));
+            });
+        }
+        JobKind::UploadPdf { citation_key, local_path } => {
+            tokio::spawn(async move {
+                let root = ctx.root.clone();
+                let key = citation_key.clone();
+                let result = tokio::task::spawn_blocking(move || upload_pdf(&key, &root, &local_path))
+                    .await
+                    .expect("upload_pdf task panicked");
+                let _ = tx.send(Message::Job(id, JobOutcome::Uploaded { citation_key, result }));
             });
         }
         JobKind::RemovePaper(citation_key) => {
@@ -229,7 +247,8 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
         | JobKind::Sync
         | JobKind::Check
         | JobKind::ExportToFile { .. }
-        | JobKind::Init => {
+        | JobKind::Init
+        | JobKind::UploadPdf { .. } => {
             unreachable!("spawn_network is only called with network JobKinds")
         }
     }
@@ -265,4 +284,18 @@ fn resolve_for_open(citation_key: &str, root: &Path) -> Result<PathBuf, OpenErro
         NoSourceUrl => Err(OpenError::NoSourceUrl(citation_key.to_string())),
         NotFetched => Err(OpenError::StillNotFetched),
     }
+}
+
+/// Publishes `local_path` to GitHub Releases and immediately records the
+/// resulting URL as `citation_key`'s source, as one job — so a successful
+/// upload always leaves the library consistent (no "uploaded but forgot to
+/// save" half-state for the UI to recover from).
+fn upload_pdf(citation_key: &str, root: &Path, local_path: &Path) -> Result<String, PaxError> {
+    let url = pax_core::publish_to_github_release(root, citation_key, local_path)?;
+    let edits = PaperEdits {
+        source_url: Some(url.clone()),
+        ..Default::default()
+    };
+    pax_core::edit_paper(citation_key, root, &edits)?;
+    Ok(url)
 }

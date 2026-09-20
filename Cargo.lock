@@ -2164,8 +2164,8 @@ dependencies = [
 
 [[package]]
 name = "pax-core"
-version = "1.0.0"
-source = "git+https://github.com/Santiago-Garrote/pax.git?tag=1.0.0#dccbeee78f5fc668fe8a8a1a668e57ce6903ee4b"
+version = "1.1.0"
+source = "git+https://github.com/Santiago-Garrote/pax.git?tag=1.1.0#9861b8f4794a083cf86c3139c46a6f96064e3807"
 dependencies = [
  "arxiv-client",
  "crossref",
@@ -3409,7 +3409,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

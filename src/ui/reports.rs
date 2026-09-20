@@ -1,8 +1,10 @@
 use pax_core::{CheckReport, CheckStatus, FetchOutcome, SyncReport};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use ratatui::Frame;
+
+use crate::ui::SELECTED_ROW_STYLE;
 
 /// Shared list rendering for `pax sync`/`pax check`'s per-paper results —
 /// both are just "a citation key plus a one-line, colored outcome", so one
@@ -32,7 +34,7 @@ fn draw_report<T>(
         .collect();
     let list = List::new(items)
         .block(Block::default().title(title.to_string()).borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(SELECTED_ROW_STYLE);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
 }

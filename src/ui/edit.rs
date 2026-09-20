@@ -16,9 +16,10 @@ pub enum EditField {
     Authors,
     Year,
     Doi,
+    SourceUrl,
 }
 
-const FIELD_ORDER: [EditField; 7] = [
+const FIELD_ORDER: [EditField; 8] = [
     EditField::Tags,
     EditField::Notes,
     EditField::Rename,
@@ -26,6 +27,7 @@ const FIELD_ORDER: [EditField; 7] = [
     EditField::Authors,
     EditField::Year,
     EditField::Doi,
+    EditField::SourceUrl,
 ];
 
 impl EditField {
@@ -38,6 +40,7 @@ impl EditField {
             EditField::Authors => "Authors",
             EditField::Year => "Year",
             EditField::Doi => "DOI",
+            EditField::SourceUrl => "PDF source URL",
         }
     }
 
@@ -52,6 +55,7 @@ impl EditField {
             EditField::Authors => Some(InsertTarget::EditAuthors),
             EditField::Year => Some(InsertTarget::EditYear),
             EditField::Doi => Some(InsertTarget::EditDoi),
+            EditField::SourceUrl => Some(InsertTarget::EditSourceUrl),
         }
     }
 }
@@ -66,6 +70,7 @@ pub struct EditScreen {
     pub authors: String,
     pub year: String,
     pub doi: String,
+    pub source_url: String,
     /// Snapshots of the single-value fields as loaded, so `build_edits` can
     /// tell "the user actually changed this" from "this field is pre-filled
     /// with the paper's existing, necessarily non-empty value" (title and
@@ -76,6 +81,7 @@ pub struct EditScreen {
     original_authors: String,
     original_year: String,
     original_doi: String,
+    original_source_url: String,
     pub focus: EditField,
     /// Live edit buffer while an `InsertTarget::Edit*` mode is active; only
     /// copied into the target field on submit. Shared across all Edit
@@ -95,11 +101,13 @@ impl Default for EditScreen {
             authors: String::new(),
             year: String::new(),
             doi: String::new(),
+            source_url: String::new(),
             original_notes: String::new(),
             original_title: String::new(),
             original_authors: String::new(),
             original_year: String::new(),
             original_doi: String::new(),
+            original_source_url: String::new(),
             focus: EditField::Tags,
             buffer: String::new(),
         }
@@ -113,6 +121,7 @@ impl EditScreen {
         let authors = paper.identity.authors.join(", ");
         let year = paper.identity.year.map(|y| y.to_string()).unwrap_or_default();
         let doi = paper.identity.doi.clone().unwrap_or_default();
+        let source_url = paper.artifact.source_url.clone().unwrap_or_default();
         Self {
             citation_key: paper.local.citation_key.clone(),
             tags: paper.local.tags.clone(),
@@ -123,11 +132,13 @@ impl EditScreen {
             original_authors: authors.clone(),
             original_year: year.clone(),
             original_doi: doi.clone(),
+            original_source_url: source_url.clone(),
             notes,
             title,
             authors,
             year,
             doi,
+            source_url,
             focus: EditField::Tags,
             buffer: String::new(),
         }
@@ -148,7 +159,7 @@ impl EditScreen {
     }
 
     pub fn go_bottom(&mut self) {
-        self.focus = EditField::Doi;
+        self.focus = EditField::SourceUrl;
     }
 
     /// The `InsertTarget` for whichever field currently has focus —
@@ -161,6 +172,16 @@ impl EditScreen {
         self.tags.pop();
     }
 
+    /// Reflects a source URL that's already been persisted elsewhere — the
+    /// upload job calls `pax_core::edit_paper` itself, so this just syncs
+    /// the Edit screen's display. Sets both the live and "original" copies
+    /// so `build_edits` doesn't also try to resubmit it as a pending change
+    /// on the next save.
+    pub fn apply_uploaded_source_url(&mut self, url: String) {
+        self.original_source_url = url.clone();
+        self.source_url = url;
+    }
+
     pub fn begin_field_edit(&mut self, target: InsertTarget) {
         self.buffer = match target {
             InsertTarget::EditTagAdd => String::new(),
@@ -170,7 +191,11 @@ impl EditScreen {
             InsertTarget::EditAuthors => self.authors.clone(),
             InsertTarget::EditYear => self.year.clone(),
             InsertTarget::EditDoi => self.doi.clone(),
-            InsertTarget::LibraryFilter | InsertTarget::SearchQuery | InsertTarget::ExportPath => String::new(),
+            InsertTarget::EditSourceUrl => self.source_url.clone(),
+            InsertTarget::UploadPdfPath
+            | InsertTarget::LibraryFilter
+            | InsertTarget::SearchQuery
+            | InsertTarget::ExportPath => String::new(),
         };
     }
 
@@ -188,7 +213,13 @@ impl EditScreen {
             InsertTarget::EditAuthors => self.authors = self.buffer.clone(),
             InsertTarget::EditYear => self.year = self.buffer.clone(),
             InsertTarget::EditDoi => self.doi = self.buffer.clone(),
-            InsertTarget::LibraryFilter | InsertTarget::SearchQuery | InsertTarget::ExportPath => {}
+            InsertTarget::EditSourceUrl => self.source_url = self.buffer.clone(),
+            // `UploadPdfPath` never reaches here — `App::submit_input`
+            // intercepts it before falling through to `commit_field_edit`,
+            // since submitting it dispatches an upload job rather than
+            // writing straight into a field. Still handled explicitly
+            // (as a no-op) to keep this match exhaustive.
+            InsertTarget::UploadPdfPath | InsertTarget::LibraryFilter | InsertTarget::SearchQuery | InsertTarget::ExportPath => {}
         }
         self.buffer.clear();
     }
@@ -241,6 +272,7 @@ impl EditScreen {
             None
         };
         let doi = changed(&self.original_doi, &self.doi);
+        let source_url = changed(&self.original_source_url, &self.source_url);
 
         PaperEdits {
             add_tags,
@@ -251,6 +283,7 @@ impl EditScreen {
             authors,
             year,
             doi,
+            source_url,
         }
     }
 }
@@ -267,6 +300,17 @@ fn changed(original: &str, current: &str) -> Option<String> {
 
 pub fn draw(frame: &mut Frame, screen: &EditScreen, editing_target: Option<InsertTarget>, area: Rect) {
     let mut lines = vec![Line::from(format!("Editing {}", screen.citation_key))];
+    // `UploadPdfPath` has no corresponding `EditField` (it isn't a
+    // persistent value on the paper, only the local path prompt for one
+    // upload), so it can't be shown by the per-field loop below like every
+    // other insert target — it needs its own line, or the buffer being
+    // typed is invisible.
+    if editing_target == Some(InsertTarget::UploadPdfPath) {
+        lines.push(Line::from(Span::styled(
+            format!("Upload PDF path: {}▏", screen.buffer),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+    }
     for field in FIELD_ORDER {
         let focused = field == screen.focus;
         let value = field_display(screen, field, editing_target);
@@ -304,6 +348,7 @@ fn field_display(screen: &EditScreen, field: EditField, editing_target: Option<I
         EditField::Authors => &screen.authors,
         EditField::Year => &screen.year,
         EditField::Doi => &screen.doi,
+        EditField::SourceUrl => &screen.source_url,
         EditField::Tags => unreachable!(),
     };
     if value.is_empty() {
@@ -347,6 +392,7 @@ mod tests {
         assert_eq!(screen.authors, "Alice, Bob");
         assert_eq!(screen.year, "2020");
         assert_eq!(screen.doi, "10.1/x");
+        assert_eq!(screen.source_url, ""); // most added papers have no PDF source yet
     }
 
     #[test]
@@ -354,7 +400,7 @@ mod tests {
         let mut screen = EditScreen::default();
         assert!(matches!(screen.focus, EditField::Tags));
         screen.focus_prev();
-        assert!(matches!(screen.focus, EditField::Doi));
+        assert!(matches!(screen.focus, EditField::SourceUrl));
         screen.focus_next();
         assert!(matches!(screen.focus, EditField::Tags));
     }
@@ -371,6 +417,7 @@ mod tests {
         assert!(edits.authors.is_none());
         assert!(edits.year.is_none());
         assert!(edits.doi.is_none());
+        assert!(edits.source_url.is_none());
     }
 
     #[test]
@@ -397,6 +444,28 @@ mod tests {
         let edits = screen.build_edits();
         assert_eq!(edits.title, Some("New Title".to_string()));
         assert!(edits.year.is_none()); // untouched
+    }
+
+    #[test]
+    fn setting_a_source_url_on_a_paper_that_had_none_produces_an_edit() {
+        // Most added papers have no PDF source recorded (a provider found no
+        // open-access copy); this is how the user supplies one after the fact.
+        let mut screen = EditScreen::from_paper(&paper());
+        assert_eq!(screen.source_url, "");
+        screen.source_url = "https://example.org/paper.pdf".to_string();
+        let edits = screen.build_edits();
+        assert_eq!(edits.source_url, Some("https://example.org/paper.pdf".to_string()));
+    }
+
+    #[test]
+    fn apply_uploaded_source_url_does_not_reappear_as_a_pending_edit() {
+        // The upload job already calls `edit_paper` itself — this just
+        // syncs the display, so a later `w` (save) with nothing else
+        // touched must not resubmit the same URL as a "change".
+        let mut screen = EditScreen::from_paper(&paper());
+        screen.apply_uploaded_source_url("https://github.com/x/y/releases/download/papers/alice2020.pdf".to_string());
+        assert_eq!(screen.source_url, "https://github.com/x/y/releases/download/papers/alice2020.pdf");
+        assert!(screen.build_edits().source_url.is_none());
     }
 
     #[test]

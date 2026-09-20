@@ -6,6 +6,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
+use crate::ui::SELECTED_ROW_STYLE;
+
 pub enum LibraryState {
     Loading,
     NotInitialized,
@@ -200,7 +202,7 @@ fn render_table(frame: &mut Frame, papers: &[Paper], selected: usize, area: Rect
     let table = Table::new(rows, widths)
         .header(header)
         .block(Block::default().title(" lazypax — library ").borders(Borders::ALL))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .row_highlight_style(SELECTED_ROW_STYLE);
     let mut state = TableState::default().with_selected(Some(selected));
     frame.render_stateful_widget(table, area, &mut state);
 }
