@@ -144,20 +144,19 @@ logic.
 
 ## 4. Non-goals for MVP (explicitly out of scope)
 
+These are non-negotiable architectural boundaries, not just deferred
+features — everything else once listed here (PDF preview/rendering,
+annotation, full-text indexing, citation graphs, related-paper
+recommendations, AI summaries, config/theming, multi-library switching,
+scripting/plugins, packaging polish) is either built or tracked as an idea
+in the [pax-project org's idea backlog](https://github.com/pax-project/.github/blob/main/docs/ideas/lazy-pax.md)
+instead:
+
 - Any provider beyond what `pax-core` already implements (no DBLP work inside
   `lazypax` — that's `pax-core`'s call to make, not this project's).
-- PDF preview/rendering inside the terminal.
-- PDF annotation, full-text indexing, citation graphs, related-paper
-  recommendations, AI summaries.
 - Any local cache/database of its own — `research/papers.nix` (via
   `pax-core`) remains the single source of truth; no shadow state that can
   drift from it.
-- Config/theming system beyond what's needed to point at a `PAX_PDF_VIEWER`
-  and a library path.
-- Multi-library / workspace switching in one running instance.
-- Vim-style modal editing, scripting, or a plugin system.
-- Packaging/distribution polish (installers, prebuilt binaries) — a
-  `cargo run` / `cargo build --release` workflow is sufficient for MVP.
 - Any change to `pax-core`'s public API driven by `lazypax`'s convenience
   alone — if a gap is found, it's raised against `pax`, not patched around
   locally.

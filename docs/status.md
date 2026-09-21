@@ -139,12 +139,15 @@ verification detail per step), see `docs/build-log.md`.
 
 ## Non-goals — explicitly not required for MVP
 
-New providers beyond `pax-core`, in-terminal PDF preview/rendering, PDF
+New providers beyond `pax-core`, any local cache/database of its own, any
+`pax-core` API change driven by `lazypax`'s convenience alone — see
+`docs/dod.md §4` for why these are architectural boundaries rather than
+deferred features. Everything else once listed here (PDF preview/rendering,
 annotation, full-text indexing, citation graphs, related-paper
-recommendations, AI summaries, any local cache/database of its own,
-config/theming beyond viewer + library path, multi-library/workspace
-switching, modal editing/scripting/plugins, packaging/distribution polish,
-any `pax-core` API change driven by `lazypax`'s convenience alone.
+recommendations, AI summaries, config/theming, multi-library switching,
+scripting/plugins, packaging polish) is tracked as an idea in the
+[org idea backlog](https://github.com/pax-project/.github/blob/main/docs/ideas/lazy-pax.md)
+instead.
 
 ## MVP success criteria (docs/dod.md §5 — the actual "done" bar)
 
