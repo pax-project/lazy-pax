@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-`lazypax` is the interactive terminal interface for [`pax`](https://github.com/Santiago-Garrote/pax),
+`lazypax` is the interactive terminal interface for [`pax`](https://github.com/pax-project/pax-core),
 a Rust tool for discovering, declaring, managing, and reproducibly acquiring
 academic papers with Nix as the artifact backend.
 
@@ -24,7 +24,7 @@ Search → Select → Declare → Fetch → Manage → Reproduce
 ## 2. Architectural constraints (non-negotiable for MVP)
 
 - [ ] `lazypax` depends on `pax-core` as a library dependency (git or path
-      dependency on `Santiago-Garrote/pax`, `cli` feature disabled — `lazypax`
+      dependency on `pax-project/pax-core`, `cli` feature disabled — `lazypax`
       is its own binary, not a `clap` client). Shelling out to the `pax` binary
       or reimplementing provider/library logic is out of scope: any behavior
       that already exists in `pax-core` must be called, not rebuilt.
@@ -206,8 +206,8 @@ And afterward:
 - **Keybinding scheme:** vim-style (hjkl navigation, modal input where a mode
   distinction is needed, `/`-style filtering) — consistent with `lazypax`
   sitting in the same "lazy" family as `lazygit`/`lazydocker`.
-- **`pax-core` dependency:** `git` dependency on `Santiago-Garrote/pax`
-  pinned to the `1.0.0` release tag, `default-features = false` (the `cli`
+- **`pax-core` dependency:** `git` dependency on `pax-project/pax-core`
+  pinned to the `1.1.0` release tag, `default-features = false` (the `cli`
   feature — and its `clap`/`dotenvy`/`tokio` deps — stays off; `lazypax`
   brings its own `tokio` for its own event loop and to drive `pax-core`'s
   async functions). Confirmed building cleanly against that tag. Bumping the
