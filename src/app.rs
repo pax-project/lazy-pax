@@ -14,7 +14,7 @@ use crate::ui::library::{LibraryScreen, LibraryState};
 use crate::ui::search::{SearchKind, SearchScreen, SearchState};
 
 /// Which top-level view is showing. Gains a variant per screen as each one
-/// is built (see docs/status.md's build order).
+/// is built (see pax-project/.github's build-log.md).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Library,
