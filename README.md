@@ -49,3 +49,7 @@ lazy-pax
 
 - `PAX_PDF_VIEWER` — command used to open a fetched PDF (default: `xdg-open`).
 - `SEMANTIC_SCHOLAR_API_KEY`, `ARXIV_CONTACT` — optional provider credentials, passed through to `pax-core`.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
