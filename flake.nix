@@ -26,15 +26,6 @@
 
         cargoLock = {
           lockFile = ./Cargo.lock;
-          # pax-core's "1.1.0" tag has a stray committed `.direnv/` (nix-direnv
-          # cache symlinks pointing into /nix/store), fixed upstream after this
-          # tag but not in it. That makes the usual outputHashes fetchgit
-          # fixed-output derivation illegal, since a FOD's output may not
-          # itself reference other store paths:
-          #   error: fixed-output derivations must not reference store paths
-          # Route the fetch through builtins.fetchGit instead, which isn't
-          # subject to that restriction (still pinned to the exact commit).
-          allowBuiltinFetchGit = true;
         };
 
         buildInputs = app_deps;
