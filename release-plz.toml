@@ -1,0 +1,17 @@
+[workspace]
+# Same convention as pax-core: `feature(scope):` for minor bumps. `fix`,
+# `!`, and a `BREAKING CHANGE:` footer already match the Conventional
+# Commits defaults release-plz expects.
+custom_minor_increment_regex = "^feature"
+publish = false # lazy-pax is an end-user binary, not a library
+
+[changelog]
+commit_parsers = [
+  { message = "^feature", group = "Features" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^.*", skip = true },
+]
+
+[[package]]
+name = "lazy-pax"
+changelog_path = "./CHANGELOG.md"

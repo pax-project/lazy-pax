@@ -1,0 +1,11 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    uses: pax-project/.github/.github/workflows/rust-release-publish.yml@main
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
