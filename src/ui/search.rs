@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use pax_core::{CandidateWork, ProviderError, ProviderId};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
-use ratatui::Frame;
 
 use crate::ui::SELECTED_ROW_STYLE;
 
@@ -86,7 +86,10 @@ impl SearchScreen {
     /// declared in the library, for opening a detail view on it.
     pub fn selected_candidate(&self) -> Option<(CandidateWork, bool)> {
         let (results, known_dois) = match &self.state {
-            SearchState::Loaded { results, known_dois } => (results, known_dois),
+            SearchState::Loaded {
+                results,
+                known_dois,
+            } => (results, known_dois),
             _ => return None,
         };
         let work = flatten(results).get(self.selected).cloned()?;
@@ -135,7 +138,9 @@ impl SearchScreen {
     }
 }
 
-fn flatten(results: &HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>) -> Vec<CandidateWork> {
+fn flatten(
+    results: &HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>,
+) -> Vec<CandidateWork> {
     PROVIDER_ORDER
         .iter()
         .filter_map(|p| results.get(p).and_then(|r| r.as_ref().ok()))
@@ -148,7 +153,11 @@ fn provider_errors(
 ) -> Vec<(ProviderId, String)> {
     PROVIDER_ORDER
         .iter()
-        .filter_map(|p| results.get(p).and_then(|r| r.as_ref().err().map(|e| (*p, e.to_string()))))
+        .filter_map(|p| {
+            results
+                .get(p)
+                .and_then(|r| r.as_ref().err().map(|e| (*p, e.to_string())))
+        })
         .collect()
 }
 
@@ -161,9 +170,14 @@ pub fn draw(frame: &mut Frame, screen: &SearchScreen, editing: bool, area: Rect)
     frame.render_widget(Paragraph::new(header), header_area);
 
     match &screen.state {
-        SearchState::Idle => render_message(frame, list_area, "Type a query and press Enter to search."),
+        SearchState::Idle => {
+            render_message(frame, list_area, "Type a query and press Enter to search.")
+        }
         SearchState::Loading => render_message(frame, list_area, "Searching…"),
-        SearchState::Loaded { results, known_dois } => {
+        SearchState::Loaded {
+            results,
+            known_dois,
+        } => {
             let items = flatten(results);
             if items.is_empty() {
                 render_message(frame, list_area, "No results.");
@@ -175,7 +189,11 @@ pub fn draw(frame: &mut Frame, screen: &SearchScreen, editing: bool, area: Rect)
 }
 
 fn header_text(screen: &SearchScreen, editing: bool) -> String {
-    let text = if editing { &screen.query_buffer } else { &screen.query };
+    let text = if editing {
+        &screen.query_buffer
+    } else {
+        &screen.query
+    };
     let cursor = if editing { "▏" } else { "" };
     let mut header = format!(
         "Search [{}] (Tab: cycle mode, Enter: search, /: edit, Esc: back): {text}{cursor}",
@@ -191,17 +209,29 @@ fn header_text(screen: &SearchScreen, editing: bool) -> String {
 }
 
 fn render_message(frame: &mut Frame, area: Rect, message: &str) {
-    let block = Block::default().title(" lazypax — search ").borders(Borders::ALL);
+    let block = Block::default()
+        .title(" lazypax — search ")
+        .borders(Borders::ALL);
     frame.render_widget(Paragraph::new(message).block(block), area);
 }
 
-fn render_list(frame: &mut Frame, items: &[CandidateWork], known_dois: &HashSet<String>, selected: usize, area: Rect) {
+fn render_list(
+    frame: &mut Frame,
+    items: &[CandidateWork],
+    known_dois: &HashSet<String>,
+    selected: usize,
+    area: Rect,
+) {
     let list_items: Vec<ListItem> = items
         .iter()
         .map(|work| ListItem::new(format_candidate(work, known_dois)))
         .collect();
     let list = List::new(list_items)
-        .block(Block::default().title(" lazypax — search ").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(" lazypax — search ")
+                .borders(Borders::ALL),
+        )
         .highlight_style(SELECTED_ROW_STYLE);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
@@ -251,7 +281,9 @@ mod tests {
         }
     }
 
-    fn loaded(results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>) -> SearchScreen {
+    fn loaded(
+        results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>,
+    ) -> SearchScreen {
         SearchScreen {
             state: SearchState::Loaded {
                 results,
@@ -263,9 +295,16 @@ mod tests {
 
     #[test]
     fn flatten_preserves_provider_order_and_skips_errors() {
-        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> = HashMap::new();
-        results.insert(ProviderId::Crossref, Ok(vec![work(ProviderId::Crossref, "1", "B")]));
-        results.insert(ProviderId::OpenAlex, Ok(vec![work(ProviderId::OpenAlex, "2", "A")]));
+        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> =
+            HashMap::new();
+        results.insert(
+            ProviderId::Crossref,
+            Ok(vec![work(ProviderId::Crossref, "1", "B")]),
+        );
+        results.insert(
+            ProviderId::OpenAlex,
+            Ok(vec![work(ProviderId::OpenAlex, "2", "A")]),
+        );
         results.insert(ProviderId::SemanticScholar, Err(ProviderError::NotFound));
 
         let flat = flatten(&results);
@@ -276,7 +315,8 @@ mod tests {
 
     #[test]
     fn provider_errors_lists_only_failing_providers() {
-        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> = HashMap::new();
+        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> =
+            HashMap::new();
         results.insert(ProviderId::OpenAlex, Ok(vec![]));
         results.insert(ProviderId::Crossref, Err(ProviderError::NotFound));
 
@@ -287,10 +327,14 @@ mod tests {
 
     #[test]
     fn movement_wraps_across_flattened_results() {
-        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> = HashMap::new();
+        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> =
+            HashMap::new();
         results.insert(
             ProviderId::OpenAlex,
-            Ok(vec![work(ProviderId::OpenAlex, "1", "A"), work(ProviderId::OpenAlex, "2", "B")]),
+            Ok(vec![
+                work(ProviderId::OpenAlex, "1", "A"),
+                work(ProviderId::OpenAlex, "2", "B"),
+            ]),
         );
         let mut screen = loaded(results);
         screen.selected = 1;
@@ -316,12 +360,16 @@ mod tests {
     fn selected_candidate_reports_in_library_from_normalized_doi() {
         let mut w = work(ProviderId::OpenAlex, "1", "A");
         w.doi = Some("https://doi.org/10.1145/foo".to_string());
-        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> = HashMap::new();
+        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> =
+            HashMap::new();
         results.insert(ProviderId::OpenAlex, Ok(vec![w]));
         let mut known_dois = HashSet::new();
         known_dois.insert("10.1145/foo".to_string());
         let screen = SearchScreen {
-            state: SearchState::Loaded { results, known_dois },
+            state: SearchState::Loaded {
+                results,
+                known_dois,
+            },
             ..Default::default()
         };
         let (candidate, in_library) = screen.selected_candidate().unwrap();

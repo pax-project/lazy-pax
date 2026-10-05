@@ -1,9 +1,11 @@
 use std::io::{self, Stdout};
 
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::backend::CrosstermBackend;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 /// Owns the raw-mode/alternate-screen terminal state for the whole run.
 /// Restores the terminal on drop, so a normal exit or a propagated error

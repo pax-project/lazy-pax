@@ -1,10 +1,13 @@
 use pax_core::{CandidateWork, Paper};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 pub enum DetailSubject {
-    Candidate { work: CandidateWork, in_library: bool },
+    Candidate {
+        work: CandidateWork,
+        in_library: bool,
+    },
     Declared(Paper),
 }
 
@@ -14,13 +17,18 @@ pub struct DetailScreen {
 }
 
 pub fn draw(frame: &mut Frame, screen: &DetailScreen, area: Rect) {
-    let block = Block::default().title(" lazypax — detail ").borders(Borders::ALL);
+    let block = Block::default()
+        .title(" lazypax — detail ")
+        .borders(Borders::ALL);
     let text = match &screen.subject {
         None => "Nothing selected.".to_string(),
         Some(DetailSubject::Candidate { work, in_library }) => format_candidate(work, *in_library),
         Some(DetailSubject::Declared(paper)) => format_paper(paper),
     };
-    frame.render_widget(Paragraph::new(text).block(block).wrap(Wrap { trim: false }), area);
+    frame.render_widget(
+        Paragraph::new(text).block(block).wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 /// Mirrors the field set (and mostly the wording) of the `pax` CLI's own
@@ -37,7 +45,10 @@ fn format_candidate(work: &CandidateWork, in_library: bool) -> String {
         format!("Authors:     {authors}"),
         format!("Published:   {}", work.publish_date),
         format!("DOI:         {}", work.doi.as_deref().unwrap_or("(no doi)")),
-        format!("Venue:       {}", work.venue.as_deref().unwrap_or("(no venue)")),
+        format!(
+            "Venue:       {}",
+            work.venue.as_deref().unwrap_or("(no venue)")
+        ),
         format!(
             "PDF source:  {}",
             work.pdf_url.as_deref().unwrap_or("(none found)")
@@ -77,11 +88,19 @@ fn format_paper(paper: &Paper) -> String {
     lines.push(format!("Citation key: {}", paper.local.citation_key));
     lines.push(format!(
         "PDF source:   {}",
-        paper.artifact.source_url.as_deref().unwrap_or("(not resolved)")
+        paper
+            .artifact
+            .source_url
+            .as_deref()
+            .unwrap_or("(not resolved)")
     ));
     lines.push(format!(
         "Artifact:     {}",
-        if paper.artifact.hash.is_some() { "Fetched" } else { "Not fetched" }
+        if paper.artifact.hash.is_some() {
+            "Fetched"
+        } else {
+            "Not fetched"
+        }
     ));
     if !paper.local.tags.is_empty() {
         lines.push(format!("Tags:         {}", paper.local.tags.join(", ")));

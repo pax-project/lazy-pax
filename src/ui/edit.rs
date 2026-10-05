@@ -1,9 +1,9 @@
 use pax_core::{Paper, PaperEdits};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::InsertTarget;
 
@@ -119,7 +119,11 @@ impl EditScreen {
         let notes = paper.local.notes.clone().unwrap_or_default();
         let title = paper.identity.title.clone();
         let authors = paper.identity.authors.join(", ");
-        let year = paper.identity.year.map(|y| y.to_string()).unwrap_or_default();
+        let year = paper
+            .identity
+            .year
+            .map(|y| y.to_string())
+            .unwrap_or_default();
         let doi = paper.identity.doi.clone().unwrap_or_default();
         let source_url = paper.artifact.source_url.clone().unwrap_or_default();
         Self {
@@ -145,12 +149,18 @@ impl EditScreen {
     }
 
     pub fn focus_next(&mut self) {
-        let idx = FIELD_ORDER.iter().position(|f| *f == self.focus).unwrap_or(0);
+        let idx = FIELD_ORDER
+            .iter()
+            .position(|f| *f == self.focus)
+            .unwrap_or(0);
         self.focus = FIELD_ORDER[(idx + 1) % FIELD_ORDER.len()];
     }
 
     pub fn focus_prev(&mut self) {
-        let idx = FIELD_ORDER.iter().position(|f| *f == self.focus).unwrap_or(0);
+        let idx = FIELD_ORDER
+            .iter()
+            .position(|f| *f == self.focus)
+            .unwrap_or(0);
         self.focus = FIELD_ORDER[(idx + FIELD_ORDER.len() - 1) % FIELD_ORDER.len()];
     }
 
@@ -219,7 +229,10 @@ impl EditScreen {
             // since submitting it dispatches an upload job rather than
             // writing straight into a field. Still handled explicitly
             // (as a no-op) to keep this match exhaustive.
-            InsertTarget::UploadPdfPath | InsertTarget::LibraryFilter | InsertTarget::SearchQuery | InsertTarget::ExportPath => {}
+            InsertTarget::UploadPdfPath
+            | InsertTarget::LibraryFilter
+            | InsertTarget::SearchQuery
+            | InsertTarget::ExportPath => {}
         }
         self.buffer.clear();
     }
@@ -262,7 +275,11 @@ impl EditScreen {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-            if parsed.is_empty() { None } else { Some(parsed) }
+            if parsed.is_empty() {
+                None
+            } else {
+                Some(parsed)
+            }
         } else {
             None
         };
@@ -298,7 +315,12 @@ fn changed(original: &str, current: &str) -> Option<String> {
     }
 }
 
-pub fn draw(frame: &mut Frame, screen: &EditScreen, editing_target: Option<InsertTarget>, area: Rect) {
+pub fn draw(
+    frame: &mut Frame,
+    screen: &EditScreen,
+    editing_target: Option<InsertTarget>,
+    area: Rect,
+) {
     let mut lines = vec![Line::from(format!("Editing {}", screen.citation_key))];
     // `UploadPdfPath` has no corresponding `EditField` (it isn't a
     // persistent value on the paper, only the local path prompt for one
@@ -325,11 +347,22 @@ pub fn draw(frame: &mut Frame, screen: &EditScreen, editing_target: Option<Inser
             style,
         )));
     }
-    let block = Block::default().title(" lazypax — edit ").borders(Borders::ALL);
-    frame.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);
+    let block = Block::default()
+        .title(" lazypax — edit ")
+        .borders(Borders::ALL);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
-fn field_display(screen: &EditScreen, field: EditField, editing_target: Option<InsertTarget>) -> String {
+fn field_display(
+    screen: &EditScreen,
+    field: EditField,
+    editing_target: Option<InsertTarget>,
+) -> String {
     if field == EditField::Tags {
         return if screen.tags.is_empty() {
             "(none)".to_string()
@@ -434,7 +467,10 @@ mod tests {
         let mut screen = EditScreen::from_paper(&paper());
         assert!(screen.build_edits().rename.is_none());
         screen.rename = "alice2020new".to_string();
-        assert_eq!(screen.build_edits().rename, Some("alice2020new".to_string()));
+        assert_eq!(
+            screen.build_edits().rename,
+            Some("alice2020new".to_string())
+        );
     }
 
     #[test]
@@ -454,7 +490,10 @@ mod tests {
         assert_eq!(screen.source_url, "");
         screen.source_url = "https://example.org/paper.pdf".to_string();
         let edits = screen.build_edits();
-        assert_eq!(edits.source_url, Some("https://example.org/paper.pdf".to_string()));
+        assert_eq!(
+            edits.source_url,
+            Some("https://example.org/paper.pdf".to_string())
+        );
     }
 
     #[test]
@@ -463,8 +502,13 @@ mod tests {
         // syncs the display, so a later `w` (save) with nothing else
         // touched must not resubmit the same URL as a "change".
         let mut screen = EditScreen::from_paper(&paper());
-        screen.apply_uploaded_source_url("https://github.com/x/y/releases/download/papers/alice2020.pdf".to_string());
-        assert_eq!(screen.source_url, "https://github.com/x/y/releases/download/papers/alice2020.pdf");
+        screen.apply_uploaded_source_url(
+            "https://github.com/x/y/releases/download/papers/alice2020.pdf".to_string(),
+        );
+        assert_eq!(
+            screen.source_url,
+            "https://github.com/x/y/releases/download/papers/alice2020.pdf"
+        );
         assert!(screen.build_edits().source_url.is_none());
     }
 
@@ -489,7 +533,10 @@ mod tests {
         let mut screen = EditScreen::from_paper(&paper());
         screen.authors = " Carol ,  Dave".to_string();
         let edits = screen.build_edits();
-        assert_eq!(edits.authors, Some(vec!["Carol".to_string(), "Dave".to_string()]));
+        assert_eq!(
+            edits.authors,
+            Some(vec!["Carol".to_string(), "Dave".to_string()])
+        );
     }
 
     #[test]

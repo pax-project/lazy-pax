@@ -99,7 +99,10 @@ mod tests {
         status.pending("working…");
         status.set_at = Some(Instant::now() - Duration::from_secs(3600));
         status.clear_if_expired();
-        assert!(status.message.is_some(), "a still-running job's status must not be hidden by a timer");
+        assert!(
+            status.message.is_some(),
+            "a still-running job's status must not be hidden by a timer"
+        );
     }
 
     #[test]

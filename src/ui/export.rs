@@ -1,6 +1,6 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 #[derive(Default)]
 pub struct ExportScreen {
@@ -14,16 +14,21 @@ pub struct ExportScreen {
 }
 
 pub fn draw(frame: &mut Frame, screen: &ExportScreen, editing: bool, area: Rect) {
-    let [preview_area, path_area] = Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(area);
+    let [preview_area, path_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(area);
 
     let preview_text = if screen.bibtex.is_empty() {
         "Library is empty.".to_string()
     } else {
         screen.bibtex.clone()
     };
-    let preview_block = Block::default().title(" lazypax — export (BibTeX) ").borders(Borders::ALL);
+    let preview_block = Block::default()
+        .title(" lazypax — export (BibTeX) ")
+        .borders(Borders::ALL);
     frame.render_widget(
-        Paragraph::new(preview_text).block(preview_block).wrap(Wrap { trim: false }),
+        Paragraph::new(preview_text)
+            .block(preview_block)
+            .wrap(Wrap { trim: false }),
         preview_area,
     );
 

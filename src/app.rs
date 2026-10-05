@@ -154,14 +154,22 @@ impl App {
                 Vec::new()
             }
             Message::Input(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                match crate::keymap::map_key(&self.screen, &self.mode, self.confirm.is_some(), &mut self.pending, key) {
+                match crate::keymap::map_key(
+                    &self.screen,
+                    &self.mode,
+                    self.confirm.is_some(),
+                    &mut self.pending,
+                    key,
+                ) {
                     Some(action) => self.apply(action),
                     None => Vec::new(),
                 }
             }
             Message::Input(_) => Vec::new(),
             Message::Job(_id, outcome) => self.apply_job_outcome(outcome),
-            Message::ViewerExited(citation_key, result) => self.apply_viewer_exit(citation_key, result),
+            Message::ViewerExited(citation_key, result) => {
+                self.apply_viewer_exit(citation_key, result)
+            }
         }
     }
 
@@ -235,7 +243,11 @@ impl App {
                         .selected_candidate()
                         .map(|(work, in_library)| DetailSubject::Candidate { work, in_library }),
                     Screen::Library => self.library.selected_paper().map(DetailSubject::Declared),
-                    Screen::Detail | Screen::Edit | Screen::SyncReport | Screen::CheckReport | Screen::Export => None,
+                    Screen::Detail
+                    | Screen::Edit
+                    | Screen::SyncReport
+                    | Screen::CheckReport
+                    | Screen::Export => None,
                 };
                 if let Some(subject) = subject {
                     self.detail.subject = Some(subject);
@@ -320,7 +332,8 @@ impl App {
             return Vec::new();
         }
         if self.export.path.is_empty() {
-            self.status.error("No file path entered — press i/p to type one");
+            self.status
+                .error("No file path entered — press i/p to type one");
             return Vec::new();
         }
         if !self.start_job() {
@@ -328,7 +341,8 @@ impl App {
         }
         let path = std::path::PathBuf::from(&self.export.path);
         let content = self.export.bibtex.clone();
-        self.status.pending(format!("Writing {}…", self.export.path));
+        self.status
+            .pending(format!("Writing {}…", self.export.path));
         vec![Effect::Spawn(JobKind::ExportToFile { path, content })]
     }
 
@@ -381,7 +395,11 @@ impl App {
                 Some(DetailSubject::Declared(paper)) => Some(paper.clone()),
                 _ => None,
             },
-            Screen::Search | Screen::Edit | Screen::SyncReport | Screen::CheckReport | Screen::Export => None,
+            Screen::Search
+            | Screen::Edit
+            | Screen::SyncReport
+            | Screen::CheckReport
+            | Screen::Export => None,
         }
     }
 
@@ -406,7 +424,10 @@ impl App {
         }
         let citation_key = self.edit.citation_key.clone();
         let edits = self.edit.build_edits();
-        vec![Effect::Spawn(JobKind::EditPaper { citation_key, edits })]
+        vec![Effect::Spawn(JobKind::EditPaper {
+            citation_key,
+            edits,
+        })]
     }
 
     fn fetch_selected(&mut self) -> Vec<Effect> {
@@ -431,11 +452,19 @@ impl App {
         vec![Effect::Spawn(JobKind::ResolveForOpen(citation_key))]
     }
 
-    fn apply_viewer_exit(&mut self, citation_key: String, result: std::io::Result<std::process::ExitStatus>) -> Vec<Effect> {
+    fn apply_viewer_exit(
+        &mut self,
+        citation_key: String,
+        result: std::io::Result<std::process::ExitStatus>,
+    ) -> Vec<Effect> {
         match result {
             Ok(status) if status.success() => self.status.message = None,
-            Ok(status) => self.status.error(format!("{citation_key}: viewer exited with {status}")),
-            Err(e) => self.status.error(format!("{citation_key}: failed to launch viewer: {e}")),
+            Ok(status) => self
+                .status
+                .error(format!("{citation_key}: viewer exited with {status}")),
+            Err(e) => self
+                .status
+                .error(format!("{citation_key}: failed to launch viewer: {e}")),
         }
         Vec::new()
     }
@@ -606,8 +635,14 @@ impl App {
             JobOutcome::Library(Err(e)) => {
                 self.status.error(e.to_string());
             }
-            JobOutcome::Searched { results, known_dois } => {
-                self.search.state = SearchState::Loaded { results, known_dois };
+            JobOutcome::Searched {
+                results,
+                known_dois,
+            } => {
+                self.search.state = SearchState::Loaded {
+                    results,
+                    known_dois,
+                };
                 self.search.selected = 0;
             }
             JobOutcome::Added(Ok(paper_ref)) => {
@@ -619,14 +654,23 @@ impl App {
             JobOutcome::Added(Err(e)) => {
                 self.status.error(e.to_string());
             }
-            JobOutcome::Fetched { citation_key, result } => match result {
+            JobOutcome::Fetched {
+                citation_key,
+                result,
+            } => match result {
                 Ok(outcome) => {
                     let hash = match &outcome {
-                        FetchOutcome::AlreadyFetched { hash } | FetchOutcome::Fetched { hash } => hash.clone(),
+                        FetchOutcome::AlreadyFetched { hash } | FetchOutcome::Fetched { hash } => {
+                            hash.clone()
+                        }
                     };
                     self.status.success(match &outcome {
-                        FetchOutcome::Fetched { .. } => format!("Fetched {citation_key} (hash {hash})"),
-                        FetchOutcome::AlreadyFetched { .. } => format!("{citation_key} already fetched"),
+                        FetchOutcome::Fetched { .. } => {
+                            format!("Fetched {citation_key} (hash {hash})")
+                        }
+                        FetchOutcome::AlreadyFetched { .. } => {
+                            format!("{citation_key} already fetched")
+                        }
                     });
                     // Only patch the Detail screen's own copy if it's still
                     // showing the same paper — the user may have navigated
@@ -641,7 +685,10 @@ impl App {
                 }
                 Err(e) => self.status.error(format!("{citation_key}: {e}")),
             },
-            JobOutcome::ReadyToOpen { citation_key, result } => match result {
+            JobOutcome::ReadyToOpen {
+                citation_key,
+                result,
+            } => match result {
                 Ok(path) => {
                     self.job_running = true;
                     return vec![
@@ -651,7 +698,10 @@ impl App {
                 }
                 Err(e) => self.status.error(e.to_string()),
             },
-            JobOutcome::Edited { citation_key, result } => match result {
+            JobOutcome::Edited {
+                citation_key,
+                result,
+            } => match result {
                 Ok(()) => {
                     self.status.success(format!("Updated {citation_key}"));
                     // A rename means `citation_key` no longer identifies the
@@ -665,7 +715,10 @@ impl App {
                 }
                 Err(e) => self.status.error(format!("{citation_key}: {e}")),
             },
-            JobOutcome::Removed { citation_key, result } => match result {
+            JobOutcome::Removed {
+                citation_key,
+                result,
+            } => match result {
                 Ok(()) => {
                     self.status.success(format!("Removed {citation_key}"));
                     self.screen = Screen::Library;
@@ -676,7 +729,8 @@ impl App {
                 Err(e) => self.status.error(format!("{citation_key}: {e}")),
             },
             JobOutcome::Synced(Ok(reports)) => {
-                self.status.success(format!("Synced {} paper(s)", reports.len()));
+                self.status
+                    .success(format!("Synced {} paper(s)", reports.len()));
                 self.sync_selected = 0;
                 self.sync_report = Some(reports);
                 self.push_screen(Screen::SyncReport);
@@ -685,14 +739,17 @@ impl App {
             }
             JobOutcome::Synced(Err(e)) => self.status.error(e.to_string()),
             JobOutcome::Checked(Ok(reports)) => {
-                self.status.success(format!("Checked {} paper(s)", reports.len()));
+                self.status
+                    .success(format!("Checked {} paper(s)", reports.len()));
                 self.check_selected = 0;
                 self.check_report = Some(reports);
                 self.push_screen(Screen::CheckReport);
             }
             JobOutcome::Checked(Err(e)) => self.status.error(e.to_string()),
             JobOutcome::Exported { path, result } => match result {
-                Ok(()) => self.status.success(format!("Exported to {}", path.display())),
+                Ok(()) => self
+                    .status
+                    .success(format!("Exported to {}", path.display())),
                 Err(e) => self.status.error(format!("{}: {e}", path.display())),
             },
             JobOutcome::Initialized(Ok(())) => {
@@ -701,9 +758,13 @@ impl App {
                 return vec![Effect::Spawn(JobKind::LoadLibrary)];
             }
             JobOutcome::Initialized(Err(e)) => self.status.error(e.to_string()),
-            JobOutcome::Uploaded { citation_key, result } => match result {
+            JobOutcome::Uploaded {
+                citation_key,
+                result,
+            } => match result {
                 Ok(url) => {
-                    self.status.success(format!("Uploaded {citation_key}.pdf — source set"));
+                    self.status
+                        .success(format!("Uploaded {citation_key}.pdf — source set"));
                     // Only patch the Edit screen's own copy if it's still
                     // showing the same paper — the user may have navigated
                     // away while this job was in flight (same guard used
@@ -748,7 +809,10 @@ mod tests {
     fn missing_library_file_is_not_initialized_not_an_error() {
         let mut app = App::new();
         let io_err = std::io::Error::new(ErrorKind::NotFound, "no such file");
-        app.update(Message::Job(1, JobOutcome::Library(Err(PaxError::Io(io_err)))));
+        app.update(Message::Job(
+            1,
+            JobOutcome::Library(Err(PaxError::Io(io_err))),
+        ));
         assert!(matches!(app.library.state, LibraryState::NotInitialized));
         assert!(app.status.message.is_none());
     }
@@ -811,7 +875,10 @@ mod tests {
     fn slash_enter_type_enter_applies_a_filter() {
         let mut app = with_two_papers();
         app.apply(Action::EnterInsert(InsertTarget::LibraryFilter));
-        assert!(matches!(app.mode, Mode::Insert(InsertTarget::LibraryFilter)));
+        assert!(matches!(
+            app.mode,
+            Mode::Insert(InsertTarget::LibraryFilter)
+        ));
         for c in "hewitt".chars() {
             app.apply(Action::InputChar(c));
         }
@@ -884,7 +951,9 @@ mod tests {
             app.apply(Action::InputChar(c));
         }
         let effects = app.apply(Action::SubmitInput);
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::SearchAll(q))] if q == "actor model"));
+        assert!(
+            matches!(effects.as_slice(), [Effect::Spawn(JobKind::SearchAll(q))] if q == "actor model")
+        );
         assert!(matches!(app.search.state, SearchState::Loading));
         assert!(matches!(app.mode, Mode::Normal));
     }
@@ -898,7 +967,9 @@ mod tests {
             app.apply(Action::InputChar(c));
         }
         let effects = app.apply(Action::SubmitInput);
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::SearchByAuthor(q))] if q == "hewitt"));
+        assert!(
+            matches!(effects.as_slice(), [Effect::Spawn(JobKind::SearchByAuthor(q))] if q == "hewitt")
+        );
     }
 
     fn candidate_work() -> pax_core::CandidateWork {
@@ -1056,7 +1127,10 @@ mod tests {
             &app.status.message,
             Some((crate::status::StatusKind::Success, msg)) if msg.contains("turing1936")
         ));
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::LoadLibrary)]
+        ));
         assert!(app.job_running); // the follow-up reload is itself now in flight
     }
 
@@ -1086,7 +1160,10 @@ mod tests {
             [Effect::Spawn(JobKind::FetchPaper(key))] if key == "turing1936"
         ));
         assert!(app.job_running);
-        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Pending, _))
+        ));
     }
 
     #[test]
@@ -1132,7 +1209,10 @@ mod tests {
             app.detail.subject,
             Some(DetailSubject::Declared(ref p)) if p.artifact.hash.as_deref() == Some("sha256-abc")
         ));
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::LoadLibrary)]
+        ));
         assert!(app.job_running);
     }
 
@@ -1189,7 +1269,13 @@ mod tests {
                 result: Ok(std::path::PathBuf::from("/nix/store/xyz-turing.pdf")),
             },
         ));
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary), Effect::LaunchViewer { .. }]));
+        assert!(matches!(
+            effects.as_slice(),
+            [
+                Effect::Spawn(JobKind::LoadLibrary),
+                Effect::LaunchViewer { .. }
+            ]
+        ));
         assert!(app.job_running);
     }
 
@@ -1228,7 +1314,10 @@ mod tests {
         let mut app = App::new();
         app.update(Message::ViewerExited(
             "turing1936".to_string(),
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such viewer")),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no such viewer",
+            )),
         ));
         assert!(matches!(
             &app.status.message,
@@ -1294,7 +1383,10 @@ mod tests {
         ));
         assert!(matches!(app.screen, Screen::Library));
         assert!(app.screen_stack.is_empty());
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::LoadLibrary)]
+        ));
         assert!(app.job_running);
     }
 
@@ -1350,7 +1442,10 @@ mod tests {
         ));
         assert!(app.job_running);
         assert!(matches!(app.mode, Mode::Normal));
-        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Pending, _))
+        ));
     }
 
     #[test]
@@ -1366,7 +1461,9 @@ mod tests {
             2,
             JobOutcome::Uploaded {
                 citation_key: "turing1936".to_string(),
-                result: Ok("https://github.com/x/y/releases/download/papers/turing1936.pdf".to_string()),
+                result: Ok(
+                    "https://github.com/x/y/releases/download/papers/turing1936.pdf".to_string(),
+                ),
             },
         ));
         assert!(matches!(
@@ -1377,7 +1474,10 @@ mod tests {
             app.edit.source_url,
             "https://github.com/x/y/releases/download/papers/turing1936.pdf"
         );
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::LoadLibrary)]
+        ));
         assert!(app.job_running);
     }
 
@@ -1402,7 +1502,9 @@ mod tests {
             2,
             JobOutcome::Uploaded {
                 citation_key: "turing1936".to_string(),
-                result: Ok("https://github.com/x/y/releases/download/papers/turing1936.pdf".to_string()),
+                result: Ok(
+                    "https://github.com/x/y/releases/download/papers/turing1936.pdf".to_string(),
+                ),
             },
         ));
         assert_eq!(app.edit.citation_key, "hewitt1973");
@@ -1571,7 +1673,10 @@ mod tests {
         ));
         assert!(matches!(app.screen, Screen::Library));
         assert!(app.screen_stack.is_empty());
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::LoadLibrary)]
+        ));
         assert!(app.job_running);
     }
 
@@ -1599,13 +1704,22 @@ mod tests {
     fn trigger_sync_and_check_only_apply_on_library() {
         let mut app = with_two_papers();
         let sync_effects = app.apply(Action::TriggerSync);
-        assert!(matches!(sync_effects.as_slice(), [Effect::Spawn(JobKind::Sync)]));
+        assert!(matches!(
+            sync_effects.as_slice(),
+            [Effect::Spawn(JobKind::Sync)]
+        ));
         assert!(app.job_running);
-        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Pending, _))
+        ));
 
         app.job_running = false;
         let check_effects = app.apply(Action::TriggerCheck);
-        assert!(matches!(check_effects.as_slice(), [Effect::Spawn(JobKind::Check)]));
+        assert!(matches!(
+            check_effects.as_slice(),
+            [Effect::Spawn(JobKind::Check)]
+        ));
 
         app.job_running = false;
         app.apply(Action::GoToSearch);
@@ -1637,7 +1751,10 @@ mod tests {
             &app.status.message,
             Some((crate::status::StatusKind::Success, msg)) if msg.contains('2')
         ));
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::LoadLibrary)]
+        ));
         assert!(app.job_running);
     }
 
@@ -1645,7 +1762,10 @@ mod tests {
     fn failed_sync_shows_an_error_and_does_not_push_a_screen() {
         let mut app = with_two_papers();
         app.apply(Action::TriggerSync);
-        app.update(Message::Job(2, JobOutcome::Synced(Err(PaxError::NoChangesSpecified))));
+        app.update(Message::Job(
+            2,
+            JobOutcome::Synced(Err(PaxError::NoChangesSpecified)),
+        ));
         assert!(matches!(app.screen, Screen::Library));
         assert!(matches!(
             &app.status.message,
@@ -1672,7 +1792,10 @@ mod tests {
     fn failed_check_shows_an_error() {
         let mut app = with_two_papers();
         app.apply(Action::TriggerCheck);
-        app.update(Message::Job(2, JobOutcome::Checked(Err(PaxError::NoChangesSpecified))));
+        app.update(Message::Job(
+            2,
+            JobOutcome::Checked(Err(PaxError::NoChangesSpecified)),
+        ));
         assert!(matches!(app.screen, Screen::Library));
         assert!(matches!(
             &app.status.message,
@@ -1686,11 +1809,15 @@ mod tests {
         app.sync_report = Some(vec![
             pax_core::SyncReport {
                 citation_key: "a".to_string(),
-                result: Ok(FetchOutcome::AlreadyFetched { hash: "h".to_string() }),
+                result: Ok(FetchOutcome::AlreadyFetched {
+                    hash: "h".to_string(),
+                }),
             },
             pax_core::SyncReport {
                 citation_key: "b".to_string(),
-                result: Ok(FetchOutcome::AlreadyFetched { hash: "h".to_string() }),
+                result: Ok(FetchOutcome::AlreadyFetched {
+                    hash: "h".to_string(),
+                }),
             },
         ]);
         app.screen = Screen::SyncReport;
@@ -1770,7 +1897,10 @@ mod tests {
             [Effect::Spawn(JobKind::ExportToFile { path, .. })] if path.to_str() == Some("out.bib")
         ));
         assert!(app.job_running);
-        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Pending, _))
+        ));
     }
 
     #[test]
@@ -1803,7 +1933,10 @@ mod tests {
             2,
             JobOutcome::Exported {
                 path: std::path::PathBuf::from("/root/no-permission.bib"),
-                result: Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied")),
+                result: Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "denied",
+                )),
             },
         ));
         assert!(matches!(
@@ -1815,7 +1948,10 @@ mod tests {
     fn not_initialized() -> App {
         let mut app = App::new();
         let io_err = std::io::Error::new(ErrorKind::NotFound, "no such file");
-        app.update(Message::Job(1, JobOutcome::Library(Err(PaxError::Io(io_err)))));
+        app.update(Message::Job(
+            1,
+            JobOutcome::Library(Err(PaxError::Io(io_err))),
+        ));
         app
     }
 
@@ -1825,7 +1961,10 @@ mod tests {
         let effects = app.apply(Action::TriggerInit);
         assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::Init)]));
         assert!(app.job_running);
-        assert!(matches!(&app.status.message, Some((crate::status::StatusKind::Pending, _))));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Pending, _))
+        ));
     }
 
     #[test]
@@ -1845,7 +1984,10 @@ mod tests {
             &app.status.message,
             Some((crate::status::StatusKind::Success, _))
         ));
-        assert!(matches!(effects.as_slice(), [Effect::Spawn(JobKind::LoadLibrary)]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::LoadLibrary)]
+        ));
         assert!(app.job_running);
     }
 
@@ -1855,7 +1997,10 @@ mod tests {
         app.apply(Action::TriggerInit);
         let effects = app.update(Message::Job(
             2,
-            JobOutcome::Initialized(Err(std::io::Error::new(ErrorKind::AlreadyExists, "research/ already exists"))),
+            JobOutcome::Initialized(Err(std::io::Error::new(
+                ErrorKind::AlreadyExists,
+                "research/ already exists",
+            ))),
         ));
         assert!(matches!(
             &app.status.message,
