@@ -1,11 +1,21 @@
 name: Attach release binary
 
+# Manual backfill/rebuild for an existing release; normal releases attach
+# the binary from release.yml.
+
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: existing release tag, e.g. v0.2.0
+        required: true
+        type: string
 
 jobs:
   attach-binary:
+    permissions:
+      contents: write
     uses: pax-project/.github/.github/workflows/rust-release-binary.yml@main
     with:
+      tag: ${{ inputs.tag }}
       binary-name: lazy-pax
