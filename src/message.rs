@@ -18,5 +18,8 @@ pub enum Effect {
     /// Suspend the terminal and hand it to `$PAX_PDF_VIEWER` (default
     /// `xdg-open`) on `path`, then resume and feed the result back as
     /// `Message::ViewerExited`.
-    LaunchViewer { citation_key: String, path: PathBuf },
+    LaunchViewer {
+        citation_key: String,
+        path: PathBuf,
+    },
 }

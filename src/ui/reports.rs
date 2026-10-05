@@ -1,8 +1,8 @@
 use pax_core::{CheckReport, CheckStatus, FetchOutcome, SyncReport};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
-use ratatui::Frame;
 
 use crate::ui::SELECTED_ROW_STYLE;
 
@@ -18,7 +18,9 @@ fn draw_report<T>(
     to_line: impl Fn(&T) -> (String, Color),
 ) {
     if reports.is_empty() {
-        let block = Block::default().title(title.to_string()).borders(Borders::ALL);
+        let block = Block::default()
+            .title(title.to_string())
+            .borders(Borders::ALL);
         frame.render_widget(
             ratatui::widgets::Paragraph::new("Library is empty.").block(block),
             area,
@@ -33,27 +35,46 @@ fn draw_report<T>(
         })
         .collect();
     let list = List::new(items)
-        .block(Block::default().title(title.to_string()).borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(title.to_string())
+                .borders(Borders::ALL),
+        )
         .highlight_style(SELECTED_ROW_STYLE);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
 pub fn draw_sync(frame: &mut Frame, reports: &[SyncReport], selected: usize, area: Rect) {
-    draw_report(frame, " lazypax — sync ", reports, selected, area, sync_line);
+    draw_report(
+        frame,
+        " lazypax — sync ",
+        reports,
+        selected,
+        area,
+        sync_line,
+    );
 }
 
 pub fn draw_check(frame: &mut Frame, reports: &[CheckReport], selected: usize, area: Rect) {
-    draw_report(frame, " lazypax — check ", reports, selected, area, check_line);
+    draw_report(
+        frame,
+        " lazypax — check ",
+        reports,
+        selected,
+        area,
+        check_line,
+    );
 }
 
 /// Mirrors the `pax` CLI's own `sink.rs::fetched()` wording, so a sync
 /// result reads the same here as after a plain `pax fetch`/`pax sync`.
 fn sync_line(report: &SyncReport) -> (String, Color) {
     match &report.result {
-        Ok(FetchOutcome::Fetched { hash }) => {
-            (format!("{}: fetched (hash {hash})", report.citation_key), Color::Green)
-        }
+        Ok(FetchOutcome::Fetched { hash }) => (
+            format!("{}: fetched (hash {hash})", report.citation_key),
+            Color::Green,
+        ),
         Ok(FetchOutcome::AlreadyFetched { hash }) => (
             format!("{}: already fetched (hash {hash})", report.citation_key),
             Color::Green,
@@ -65,13 +86,25 @@ fn sync_line(report: &SyncReport) -> (String, Color) {
 /// Mirrors the `pax` CLI's own `sink.rs::checked()` per-line wording.
 fn check_line(report: &CheckReport) -> (String, Color) {
     match &report.status {
-        CheckStatus::NotFetched => (format!("{}: not fetched", report.citation_key), Color::Yellow),
-        CheckStatus::Reproducible => (format!("{}: reproducible", report.citation_key), Color::Green),
+        CheckStatus::NotFetched => (
+            format!("{}: not fetched", report.citation_key),
+            Color::Yellow,
+        ),
+        CheckStatus::Reproducible => (
+            format!("{}: reproducible", report.citation_key),
+            Color::Green,
+        ),
         CheckStatus::Mismatch { expected, actual } => (
-            format!("{}: MISMATCH (expected {expected}, got {actual})", report.citation_key),
+            format!(
+                "{}: MISMATCH (expected {expected}, got {actual})",
+                report.citation_key
+            ),
             Color::Red,
         ),
-        CheckStatus::Error(msg) => (format!("{}: ERROR — {msg}", report.citation_key), Color::Red),
+        CheckStatus::Error(msg) => (
+            format!("{}: ERROR — {msg}", report.citation_key),
+            Color::Red,
+        ),
     }
 }
 
@@ -119,8 +152,16 @@ mod tests {
     #[test]
     fn check_line_formats_every_status() {
         let cases = [
-            (CheckStatus::NotFetched, "turing1936: not fetched", Color::Yellow),
-            (CheckStatus::Reproducible, "turing1936: reproducible", Color::Green),
+            (
+                CheckStatus::NotFetched,
+                "turing1936: not fetched",
+                Color::Yellow,
+            ),
+            (
+                CheckStatus::Reproducible,
+                "turing1936: reproducible",
+                Color::Green,
+            ),
             (
                 CheckStatus::Mismatch {
                     expected: "sha256-abc".to_string(),

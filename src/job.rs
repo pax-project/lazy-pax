@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use pax_core::{
-    CandidateId, CandidateWork, CheckReport, FetchOutcome, PaperEdits, PaperRef, PaxError, ProviderError, ProviderId,
-    ResolvedArtifact, SyncReport,
+    CandidateId, CandidateWork, CheckReport, FetchOutcome, PaperEdits, PaperRef, PaxError,
+    ProviderError, ProviderId, ResolvedArtifact, SyncReport,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -26,13 +26,22 @@ pub enum JobKind {
     AddCandidate(CandidateId),
     FetchPaper(String),
     ResolveForOpen(String),
-    EditPaper { citation_key: String, edits: PaperEdits },
+    EditPaper {
+        citation_key: String,
+        edits: PaperEdits,
+    },
     RemovePaper(String),
     Sync,
     Check,
-    ExportToFile { path: PathBuf, content: String },
+    ExportToFile {
+        path: PathBuf,
+        content: String,
+    },
     Init,
-    UploadPdf { citation_key: String, local_path: PathBuf },
+    UploadPdf {
+        citation_key: String,
+        local_path: PathBuf,
+    },
 }
 
 pub enum JobOutcome {
@@ -93,7 +102,9 @@ impl std::fmt::Display for OpenError {
                 f,
                 "{key:?} has no PDF source recorded — the provider found no open-access copy when it was added, so there's nothing to fetch"
             ),
-            OpenError::StillNotFetched => write!(f, "fetched, but the artifact still couldn't be resolved"),
+            OpenError::StillNotFetched => {
+                write!(f, "fetched, but the artifact still couldn't be resolved")
+            }
         }
     }
 }
@@ -119,10 +130,17 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
             tokio::spawn(async move {
                 let root = ctx.root.clone();
                 let key = citation_key.clone();
-                let result = tokio::task::spawn_blocking(move || pax_core::fetch_paper(&key, &root))
-                    .await
-                    .expect("fetch_paper task panicked");
-                let _ = tx.send(Message::Job(id, JobOutcome::Fetched { citation_key, result }));
+                let result =
+                    tokio::task::spawn_blocking(move || pax_core::fetch_paper(&key, &root))
+                        .await
+                        .expect("fetch_paper task panicked");
+                let _ = tx.send(Message::Job(
+                    id,
+                    JobOutcome::Fetched {
+                        citation_key,
+                        result,
+                    },
+                ));
             });
         }
         JobKind::ResolveForOpen(citation_key) => {
@@ -132,37 +150,70 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let result = tokio::task::spawn_blocking(move || resolve_for_open(&key, &root))
                     .await
                     .expect("resolve_for_open task panicked");
-                let _ = tx.send(Message::Job(id, JobOutcome::ReadyToOpen { citation_key, result }));
+                let _ = tx.send(Message::Job(
+                    id,
+                    JobOutcome::ReadyToOpen {
+                        citation_key,
+                        result,
+                    },
+                ));
             });
         }
-        JobKind::EditPaper { citation_key, edits } => {
+        JobKind::EditPaper {
+            citation_key,
+            edits,
+        } => {
             tokio::spawn(async move {
                 let root = ctx.root.clone();
                 let key = citation_key.clone();
-                let result = tokio::task::spawn_blocking(move || pax_core::edit_paper(&key, &root, &edits))
-                    .await
-                    .expect("edit_paper task panicked");
-                let _ = tx.send(Message::Job(id, JobOutcome::Edited { citation_key, result }));
+                let result =
+                    tokio::task::spawn_blocking(move || pax_core::edit_paper(&key, &root, &edits))
+                        .await
+                        .expect("edit_paper task panicked");
+                let _ = tx.send(Message::Job(
+                    id,
+                    JobOutcome::Edited {
+                        citation_key,
+                        result,
+                    },
+                ));
             });
         }
-        JobKind::UploadPdf { citation_key, local_path } => {
+        JobKind::UploadPdf {
+            citation_key,
+            local_path,
+        } => {
             tokio::spawn(async move {
                 let root = ctx.root.clone();
                 let key = citation_key.clone();
-                let result = tokio::task::spawn_blocking(move || upload_pdf(&key, &root, &local_path))
-                    .await
-                    .expect("upload_pdf task panicked");
-                let _ = tx.send(Message::Job(id, JobOutcome::Uploaded { citation_key, result }));
+                let result =
+                    tokio::task::spawn_blocking(move || upload_pdf(&key, &root, &local_path))
+                        .await
+                        .expect("upload_pdf task panicked");
+                let _ = tx.send(Message::Job(
+                    id,
+                    JobOutcome::Uploaded {
+                        citation_key,
+                        result,
+                    },
+                ));
             });
         }
         JobKind::RemovePaper(citation_key) => {
             tokio::spawn(async move {
                 let root = ctx.root.clone();
                 let key = citation_key.clone();
-                let result = tokio::task::spawn_blocking(move || pax_core::remove_paper(&key, &root))
-                    .await
-                    .expect("remove_paper task panicked");
-                let _ = tx.send(Message::Job(id, JobOutcome::Removed { citation_key, result }));
+                let result =
+                    tokio::task::spawn_blocking(move || pax_core::remove_paper(&key, &root))
+                        .await
+                        .expect("remove_paper task panicked");
+                let _ = tx.send(Message::Job(
+                    id,
+                    JobOutcome::Removed {
+                        citation_key,
+                        result,
+                    },
+                ));
             });
         }
         JobKind::Sync => {
@@ -230,11 +281,15 @@ fn spawn_network(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Mess
 
 async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
     match kind {
-        JobKind::SearchAll(query) => searched(pax_core::search_all(&query, &ctx.config).await, &ctx),
+        JobKind::SearchAll(query) => {
+            searched(pax_core::search_all(&query, &ctx.config).await, &ctx)
+        }
         JobKind::SearchByAuthor(author) => {
             searched(pax_core::search_by_author(&author, &ctx.config).await, &ctx)
         }
-        JobKind::SearchByDoi(doi) => searched(pax_core::search_by_doi(&doi, &ctx.config).await, &ctx),
+        JobKind::SearchByDoi(doi) => {
+            searched(pax_core::search_by_doi(&doi, &ctx.config).await, &ctx)
+        }
         JobKind::AddCandidate(candidate_id) => {
             let result = pax_core::add_candidate(&candidate_id, &ctx.root, &ctx.config).await;
             JobOutcome::Added(result)
@@ -256,7 +311,10 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
 
 fn searched(results: SearchResults, ctx: &PaxCtx) -> JobOutcome {
     let known_dois = pax_core::known_dois(&ctx.root);
-    JobOutcome::Searched { results, known_dois }
+    JobOutcome::Searched {
+        results,
+        known_dois,
+    }
 }
 
 fn load_library(root: &Path) -> Result<Vec<pax_core::Paper>, PaxError> {

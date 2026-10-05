@@ -5,10 +5,10 @@ pub mod library;
 pub mod reports;
 pub mod search;
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::app::{App, InsertTarget, Mode, Screen};
 use crate::status::StatusKind;
@@ -22,7 +22,10 @@ use crate::ui::library::LibraryState;
 /// default palette — on some color schemes that leaves the selected row
 /// nearly unreadable. Pinning both colors makes the highlight legible
 /// regardless of terminal theme or the row's own coloring.
-pub const SELECTED_ROW_STYLE: Style = Style::new().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD);
+pub const SELECTED_ROW_STYLE: Style = Style::new()
+    .bg(Color::Blue)
+    .fg(Color::White)
+    .add_modifier(Modifier::BOLD);
 
 /// Rows the status/hint line is allowed to grow to. A one-line cap silently
 /// clipped long text off the edge of the terminal (e.g. a failed fetch's URL
@@ -70,7 +73,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     frame.render_widget(
-        Paragraph::new(status_text).style(status_style).wrap(Wrap { trim: false }),
+        Paragraph::new(status_text)
+            .style(status_style)
+            .wrap(Wrap { trim: false }),
         status,
     );
 }
@@ -83,7 +88,9 @@ fn status_content(app: &App) -> (String, Style) {
     if let Some(prompt) = &app.confirm {
         (
             format!("{}  (y/n)", prompt.message),
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         )
     } else if let Some((kind, msg)) = &app.status.message {
         let color = match kind {
@@ -111,35 +118,6 @@ fn wrapped_height(text: &str, width: u16) -> u16 {
         .map(|line| (line.chars().count() as u16).div_ceil(width).max(1))
         .sum::<u16>()
         .max(1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn short_text_needs_a_single_row() {
-        assert_eq!(wrapped_height("q: quit", 80), 1);
-    }
-
-    #[test]
-    fn text_longer_than_the_width_wraps_into_more_rows() {
-        // A failed fetch's error (e.g. a long dl.acm.org PDF URL) is exactly
-        // the case this exists for: previously clipped silently at one row.
-        let text = "backus1978: ERROR — fetch failed: error: unable to download \
-                     'https://dl.acm.org/doi/pdf/10.1145/359576.359579'";
-        assert_eq!(wrapped_height(text, 40), 3);
-    }
-
-    #[test]
-    fn empty_text_still_reserves_one_row() {
-        assert_eq!(wrapped_height("", 80), 1);
-    }
-
-    #[test]
-    fn zero_width_does_not_divide_by_zero() {
-        assert_eq!(wrapped_height("anything", 0), 1);
-    }
 }
 
 fn hint_text(app: &App) -> String {
@@ -184,5 +162,34 @@ fn hint_text(app: &App) -> String {
             Mode::Insert(_) => "Enter: apply  Esc: cancel".to_string(),
             Mode::Normal => "i/p: set path  w: write  Esc: back  q: quit".to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_text_needs_a_single_row() {
+        assert_eq!(wrapped_height("q: quit", 80), 1);
+    }
+
+    #[test]
+    fn text_longer_than_the_width_wraps_into_more_rows() {
+        // A failed fetch's error (e.g. a long dl.acm.org PDF URL) is exactly
+        // the case this exists for: previously clipped silently at one row.
+        let text = "backus1978: ERROR — fetch failed: error: unable to download \
+                     'https://dl.acm.org/doi/pdf/10.1145/359576.359579'";
+        assert_eq!(wrapped_height(text, 40), 3);
+    }
+
+    #[test]
+    fn empty_text_still_reserves_one_row() {
+        assert_eq!(wrapped_height("", 80), 1);
+    }
+
+    #[test]
+    fn zero_width_does_not_divide_by_zero() {
+        assert_eq!(wrapped_height("anything", 0), 1);
     }
 }

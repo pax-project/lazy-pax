@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use tokio::sync::mpsc;
 
 use app::App;
@@ -88,7 +88,14 @@ async fn main() -> io::Result<()> {
     let mut app = App::new();
 
     for effect in app.init_effects() {
-        handle_effect(effect, &ctx, &tx, &mut next_job_id, &mut terminal_guard, &mut app)?;
+        handle_effect(
+            effect,
+            &ctx,
+            &tx,
+            &mut next_job_id,
+            &mut terminal_guard,
+            &mut app,
+        )?;
     }
 
     let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -100,10 +107,19 @@ async fn main() -> io::Result<()> {
         };
 
         for effect in app.update(msg) {
-            handle_effect(effect, &ctx, &tx, &mut next_job_id, &mut terminal_guard, &mut app)?;
+            handle_effect(
+                effect,
+                &ctx,
+                &tx,
+                &mut next_job_id,
+                &mut terminal_guard,
+                &mut app,
+            )?;
         }
 
-        terminal_guard.terminal.draw(|frame| ui::draw(frame, &app))?;
+        terminal_guard
+            .terminal
+            .draw(|frame| ui::draw(frame, &app))?;
 
         if app.should_quit {
             break;

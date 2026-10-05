@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
 use pax_core::{ListFilter, Paper};
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
-use ratatui::Frame;
 
 use crate::ui::SELECTED_ROW_STYLE;
 
@@ -46,7 +46,8 @@ impl LibraryScreen {
     /// The papers currently on screen: every declared paper, narrowed by
     /// `query` if one is set. `None` while there's nothing loaded yet.
     pub fn visible_papers(&self) -> Option<Vec<Paper>> {
-        self.all_papers().map(|papers| filter_by_query(papers, &self.query))
+        self.all_papers()
+            .map(|papers| filter_by_query(papers, &self.query))
     }
 
     /// Every declared paper, ignoring any applied filter — for export,
@@ -155,9 +156,11 @@ pub fn draw(frame: &mut Frame, screen: &LibraryScreen, area: Rect) {
             area,
             "No pax library found here.\n\nPress i to initialize one.",
         ),
-        LibraryState::Loaded(papers) if papers.is_empty() => {
-            render_message(frame, area, "Library is empty.\n\nSearch for papers to add them.")
-        }
+        LibraryState::Loaded(papers) if papers.is_empty() => render_message(
+            frame,
+            area,
+            "Library is empty.\n\nSearch for papers to add them.",
+        ),
         LibraryState::Loaded(papers) => {
             let visible = filter_by_query(papers, &screen.query);
             if visible.is_empty() {
@@ -170,15 +173,24 @@ pub fn draw(frame: &mut Frame, screen: &LibraryScreen, area: Rect) {
 }
 
 fn render_message(frame: &mut Frame, area: Rect, message: &str) {
-    let block = Block::default().title(" lazypax — library ").borders(Borders::ALL);
-    let paragraph = Paragraph::new(message).block(block).alignment(Alignment::Center);
+    let block = Block::default()
+        .title(" lazypax — library ")
+        .borders(Borders::ALL);
+    let paragraph = Paragraph::new(message)
+        .block(block)
+        .alignment(Alignment::Center);
     frame.render_widget(paragraph, area);
 }
 
 fn render_table(frame: &mut Frame, papers: &[Paper], selected: usize, area: Rect) {
-    let header = Row::new(["", "Key", "Title", "Authors", "Year"]).style(Style::default().add_modifier(Modifier::BOLD));
+    let header = Row::new(["", "Key", "Title", "Authors", "Year"])
+        .style(Style::default().add_modifier(Modifier::BOLD));
     let rows = papers.iter().map(|paper| {
-        let fetched = if paper.artifact.hash.is_some() { "✓" } else { "✗" };
+        let fetched = if paper.artifact.hash.is_some() {
+            "✓"
+        } else {
+            "✗"
+        };
         let year = paper
             .identity
             .year
@@ -201,7 +213,11 @@ fn render_table(frame: &mut Frame, papers: &[Paper], selected: usize, area: Rect
     ];
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().title(" lazypax — library ").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(" lazypax — library ")
+                .borders(Borders::ALL),
+        )
         .row_highlight_style(SELECTED_ROW_STYLE);
     let mut state = TableState::default().with_selected(Some(selected));
     frame.render_stateful_widget(table, area, &mut state);
@@ -231,7 +247,12 @@ mod tests {
 
     fn fixture() -> Vec<Paper> {
         vec![
-            paper("turing1936", "Alan Turing", 1936, &["computability", "logic"]),
+            paper(
+                "turing1936",
+                "Alan Turing",
+                1936,
+                &["computability", "logic"],
+            ),
             paper("hewitt1973", "Carl Hewitt", 1973, &["concurrency"]),
         ]
     }
@@ -312,11 +333,17 @@ mod tests {
     fn selected_paper_reflects_the_filtered_view() {
         let mut screen = loaded(fixture());
         screen.selected = 1;
-        assert_eq!(screen.selected_paper().unwrap().local.citation_key, "hewitt1973");
+        assert_eq!(
+            screen.selected_paper().unwrap().local.citation_key,
+            "hewitt1973"
+        );
 
         screen.query = "turing".to_string();
         screen.selected = 0;
-        assert_eq!(screen.selected_paper().unwrap().local.citation_key, "turing1936");
+        assert_eq!(
+            screen.selected_paper().unwrap().local.citation_key,
+            "turing1936"
+        );
     }
 
     #[test]
