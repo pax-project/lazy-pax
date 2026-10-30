@@ -21,6 +21,9 @@ pub struct StatusBar {
 pub enum StatusKind {
     Error,
     Success,
+    /// Something the user should know that didn't stop the action, e.g. a
+    /// search that wasn't recorded in the search log.
+    Warning,
     /// A job that can take real, visible time (fetch/open, which shell out
     /// to `nix`) is in flight — shown from the moment it's dispatched, not
     /// just once it resolves, since the DoD calls for "visible pending
@@ -39,6 +42,20 @@ impl StatusBar {
     pub fn success(&mut self, msg: impl Into<String>) {
         self.message = Some((StatusKind::Success, msg.into()));
         self.set_at = Some(Instant::now());
+    }
+
+    pub fn warning(&mut self, msg: impl Into<String>) {
+        self.message = Some((StatusKind::Warning, msg.into()));
+        self.set_at = Some(Instant::now());
+    }
+
+    /// Clears a `Pending` message once the job it announced has finished
+    /// without anything else to say; leaves any other message alone.
+    pub fn clear_pending(&mut self) {
+        if matches!(self.message, Some((StatusKind::Pending, _))) {
+            self.message = None;
+            self.set_at = None;
+        }
     }
 
     pub fn pending(&mut self, msg: impl Into<String>) {
@@ -79,6 +96,15 @@ mod tests {
     fn a_success_message_expires_after_the_ttl() {
         let mut status = StatusBar::default();
         status.success("done");
+        status.set_at = Some(Instant::now() - MESSAGE_TTL);
+        status.clear_if_expired();
+        assert!(status.message.is_none());
+    }
+
+    #[test]
+    fn a_warning_expires_after_the_ttl() {
+        let mut status = StatusBar::default();
+        status.warning("not logged");
         status.set_at = Some(Instant::now() - MESSAGE_TTL);
         status.clear_if_expired();
         assert!(status.message.is_none());

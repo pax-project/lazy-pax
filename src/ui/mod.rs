@@ -45,7 +45,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match app.screen {
         Screen::Library => library::draw(frame, &app.library, content),
         Screen::Search => {
-            let editing = matches!(app.mode, Mode::Insert(InsertTarget::SearchQuery));
+            let editing = match app.mode {
+                Mode::Insert(target) => Some(target),
+                Mode::Normal => None,
+            };
             search::draw(frame, &app.search, editing, content);
         }
         Screen::Detail => detail::draw(frame, &app.detail, content),
@@ -96,6 +99,7 @@ fn status_content(app: &App) -> (String, Style) {
         let color = match kind {
             StatusKind::Error => Color::Red,
             StatusKind::Success => Color::Green,
+            StatusKind::Warning => Color::LightYellow,
             StatusKind::Pending => Color::Yellow,
         };
         (msg.clone(), Style::default().fg(color))
@@ -110,7 +114,7 @@ fn status_content(app: &App) -> (String, Style) {
 /// only decides *how much room* the wrapped paragraph gets, not how it
 /// wraps). At least 1, even for empty text, since the status line is always
 /// shown.
-fn wrapped_height(text: &str, width: u16) -> u16 {
+pub(crate) fn wrapped_height(text: &str, width: u16) -> u16 {
     if width == 0 {
         return 1;
     }
@@ -140,7 +144,13 @@ fn hint_text(app: &App) -> String {
                     .to_string()
             }
         },
-        Screen::Search => "Enter/l: view  Esc: back  q: quit".to_string(),
+        Screen::Search => match &app.mode {
+            Mode::Insert(InsertTarget::SearchFilters) => {
+                "Enter: apply filters (and re-run the search)  Esc: cancel".to_string()
+            }
+            _ => "Enter/l: view  /: query  Tab: mode  F: filters  m: more  M: all  Esc: back  q: quit"
+                .to_string(),
+        },
         Screen::Detail => match &app.detail.subject {
             Some(DetailSubject::Candidate { in_library: true, .. }) => {
                 "a: add anyway (already in library)  Esc: back  q: quit".to_string()

@@ -1,17 +1,18 @@
 use std::io::ErrorKind;
 
 use crossterm::event::{Event, KeyEventKind};
-use pax_core::{FetchOutcome, PaxError};
+use pax_core::{FetchOutcome, Limit, LogOutcome, PaxError};
 
 use crate::action::Action;
 use crate::job::{JobKind, JobOutcome};
 use crate::message::{Effect, Message};
+use crate::query::SearchRequest;
 use crate::status::StatusBar;
 use crate::ui::detail::{DetailScreen, DetailSubject};
 use crate::ui::edit::EditScreen;
 use crate::ui::export::ExportScreen;
 use crate::ui::library::{LibraryScreen, LibraryState};
-use crate::ui::search::{SearchKind, SearchScreen, SearchState};
+use crate::ui::search::{LoadedSearch, SearchScreen, SearchState};
 
 /// Which top-level view is showing. Gains a variant per screen as each one
 /// is built (see pax-project/.github's build-log.md).
@@ -38,6 +39,7 @@ pub enum Mode {
 pub enum InsertTarget {
     LibraryFilter,
     SearchQuery,
+    SearchFilters,
     EditTagAdd,
     EditNotes,
     EditRename,
@@ -199,6 +201,7 @@ impl App {
                 match target {
                     InsertTarget::LibraryFilter => self.library.begin_filter_edit(),
                     InsertTarget::SearchQuery => self.search.begin_query_edit(),
+                    InsertTarget::SearchFilters => self.search.begin_filter_edit(),
                     InsertTarget::ExportPath => self.export.buffer = self.export.path.clone(),
                     edit_target => self.edit.begin_field_edit(edit_target),
                 }
@@ -313,6 +316,8 @@ impl App {
             }
             Action::SaveExport => self.save_export(),
             Action::TriggerInit => self.trigger_init(),
+            Action::LoadMore => self.load_more(false),
+            Action::LoadAll => self.load_more(true),
         }
     }
 
@@ -535,6 +540,7 @@ impl App {
         match self.mode {
             Mode::Insert(InsertTarget::LibraryFilter) => self.library.filter_buffer.push(c),
             Mode::Insert(InsertTarget::SearchQuery) => self.search.query_buffer.push(c),
+            Mode::Insert(InsertTarget::SearchFilters) => self.search.filter_buffer.push(c),
             Mode::Insert(InsertTarget::ExportPath) => self.export.buffer.push(c),
             Mode::Insert(_) => self.edit.buffer.push(c),
             Mode::Normal => {}
@@ -548,6 +554,9 @@ impl App {
             }
             Mode::Insert(InsertTarget::SearchQuery) => {
                 self.search.query_buffer.pop();
+            }
+            Mode::Insert(InsertTarget::SearchFilters) => {
+                self.search.filter_buffer.pop();
             }
             Mode::Insert(InsertTarget::ExportPath) => {
                 self.export.buffer.pop();
@@ -566,6 +575,7 @@ impl App {
                 Vec::new()
             }
             Mode::Insert(InsertTarget::SearchQuery) => self.submit_search_query(),
+            Mode::Insert(InsertTarget::SearchFilters) => self.submit_search_filters(),
             Mode::Insert(InsertTarget::ExportPath) => {
                 self.export.path = self.export.buffer.clone();
                 self.export.buffer.clear();
@@ -609,17 +619,90 @@ impl App {
         if query.is_empty() {
             return Vec::new();
         }
+        self.run_search(self.search.request(query))
+    }
+
+    /// Applies the filter prompt. A malformed prompt leaves the filters as
+    /// they were; valid filters re-run the current query, if there's one
+    /// they apply to, so the results always match the filters shown.
+    fn submit_search_filters(&mut self) -> Vec<Effect> {
+        if let Err(e) = self.search.submit_filter_edit() {
+            self.status.error(e);
+            return Vec::new();
+        }
+        let request = self.search.request(self.search.query.clone());
+        if request.query.is_empty() || !request.is_paged() {
+            self.status
+                .success("Filters set; they apply to the next search");
+            return Vec::new();
+        }
+        self.run_search(request)
+    }
+
+    fn run_search(&mut self, request: SearchRequest) -> Vec<Effect> {
         if !self.start_job() {
             return Vec::new();
         }
-        self.search.state = SearchState::Loading;
+        self.search.state = SearchState::Loading(request.clone());
         self.search.selected = 0;
-        let job = match self.search.kind {
-            SearchKind::Free => JobKind::SearchAll(query),
-            SearchKind::Author => JobKind::SearchByAuthor(query),
-            SearchKind::Doi => JobKind::SearchByDoi(query),
+        vec![Effect::Spawn(JobKind::Search(request))]
+    }
+
+    /// Re-runs the showing search with a larger per-provider limit — doubled
+    /// (`m`), or every result (`M`). pax-core's paged search has no offset to
+    /// continue from, so this is a fresh, logged search; the current results
+    /// stay on screen until it returns.
+    fn load_more(&mut self, all: bool) -> Vec<Effect> {
+        if self.screen != Screen::Search {
+            return Vec::new();
+        }
+        let Some(loaded) = self.search.loaded() else {
+            return Vec::new();
         };
-        vec![Effect::Spawn(job)]
+        if !loaded.request.is_paged() {
+            self.status.error(
+                "A DOI lookup resolves one record per provider; there's nothing more to load",
+            );
+            return Vec::new();
+        }
+        if !loaded.has_more() {
+            self.status
+                .success("Every provider's results are already loaded");
+            return Vec::new();
+        }
+        let next = if all {
+            loaded.request.all()
+        } else {
+            loaded.request.more()
+        };
+        let Some(next) = next else {
+            self.status
+                .success("Already retrieving every result each provider serves");
+            return Vec::new();
+        };
+        if !self.start_job() {
+            return Vec::new();
+        }
+        self.status.pending(match next.options.limit {
+            Limit::Count(n) => format!("Loading up to {n} results per provider…"),
+            _ => "Loading every result each provider serves (this can be slow)…".to_string(),
+        });
+        vec![Effect::Spawn(JobKind::Search(next))]
+    }
+
+    /// Surfaces a search that wasn't recorded in `research/search-log.jsonl`,
+    /// the way `pax search` warns about it on stderr. Never fatal: the
+    /// results are good either way.
+    fn report_search_log(&mut self, log: LogOutcome) {
+        match log {
+            LogOutcome::NoLibrary => self
+                .status
+                .warning("Not in a pax library, so this search isn't recorded in a search log"),
+            LogOutcome::Failed(e) => self.status.error(format!(
+                "Couldn't write research/search-log.jsonl: {e} (the results are still good)"
+            )),
+            _ => {}
+        }
     }
 
     fn apply_job_outcome(&mut self, outcome: JobOutcome) -> Vec<Effect> {
@@ -636,14 +719,17 @@ impl App {
                 self.status.error(e.to_string());
             }
             JobOutcome::Searched {
+                request,
                 results,
-                known_dois,
+                index,
+                log,
             } => {
-                self.search.state = SearchState::Loaded {
-                    results,
-                    known_dois,
-                };
-                self.search.selected = 0;
+                self.search
+                    .show_results(LoadedSearch::new(*request, results, *index));
+                self.status.clear_pending();
+                if let Some(log) = log {
+                    self.report_search_log(log);
+                }
             }
             JobOutcome::Added(Ok(paper_ref)) => {
                 self.status
@@ -797,6 +883,7 @@ fn move_index_up(selected: &mut usize, len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query::SearchKind;
 
     #[test]
     fn loading_library_ok_populates_state() {
@@ -952,10 +1039,73 @@ mod tests {
         }
         let effects = app.apply(Action::SubmitInput);
         assert!(
-            matches!(effects.as_slice(), [Effect::Spawn(JobKind::SearchAll(q))] if q == "actor model")
+            matches!(effects.as_slice(), [Effect::Spawn(JobKind::Search(r))] if r.query == "actor model" && r.kind == SearchKind::Free)
         );
-        assert!(matches!(app.search.state, SearchState::Loading));
+        assert!(matches!(app.search.state, SearchState::Loading(_)));
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    fn type_filters(app: &mut App, text: &str) -> Vec<Effect> {
+        app.apply(Action::EnterInsert(InsertTarget::SearchFilters));
+        for c in text.chars() {
+            app.apply(Action::InputChar(c));
+        }
+        app.apply(Action::SubmitInput)
+    }
+
+    #[test]
+    fn filters_set_before_a_search_apply_to_it() {
+        let mut app = App::new();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::CancelInput);
+        assert!(type_filters(&mut app, "year:2020 lang:en").is_empty());
+        app.apply(Action::EnterInsert(InsertTarget::SearchQuery));
+        for c in "actors".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        let effects = app.apply(Action::SubmitInput);
+        let [Effect::Spawn(JobKind::Search(request))] = effects.as_slice() else {
+            panic!("expected one search job");
+        };
+        assert_eq!(
+            crate::query::format_filters(&request.options.filters),
+            "year:2020 lang:en"
+        );
+    }
+
+    #[test]
+    fn changing_filters_re_runs_the_current_query() {
+        let mut app = App::new();
+        app.apply(Action::GoToSearch);
+        for c in "actors".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        app.apply(Action::SubmitInput);
+        app.job_running = false; // the first search finished
+        let effects = type_filters(&mut app, "type:preprint");
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::Search(r))]
+                if r.query == "actors" && r.options.filters.doc_type == Some(pax_core::DocType::Preprint)
+        ));
+    }
+
+    #[test]
+    fn a_malformed_filter_is_an_error_and_keeps_the_filters() {
+        let mut app = App::new();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::CancelInput);
+        type_filters(&mut app, "year:2020");
+        let effects = type_filters(&mut app, "year:20");
+        assert!(effects.is_empty());
+        assert_eq!(
+            crate::query::format_filters(&app.search.filters),
+            "year:2020"
+        );
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
     }
 
     #[test]
@@ -968,7 +1118,7 @@ mod tests {
         }
         let effects = app.apply(Action::SubmitInput);
         assert!(
-            matches!(effects.as_slice(), [Effect::Spawn(JobKind::SearchByAuthor(q))] if q == "hewitt")
+            matches!(effects.as_slice(), [Effect::Spawn(JobKind::Search(r))] if r.query == "hewitt" && r.kind == SearchKind::Author)
         );
     }
 
@@ -989,15 +1139,24 @@ mod tests {
     }
 
     fn with_search_results() -> App {
-        use std::collections::{HashMap, HashSet};
+        use std::collections::HashMap;
         let mut app = App::new();
         let mut results = HashMap::new();
-        results.insert(pax_core::ProviderId::OpenAlex, Ok(vec![candidate_work()]));
+        results.insert(
+            pax_core::ProviderId::OpenAlex,
+            Ok(pax_core::SearchPage::new(
+                vec![candidate_work()],
+                None,
+                None,
+            )),
+        );
         app.update(Message::Job(
             1,
             JobOutcome::Searched {
+                request: Box::new(SearchRequest::new(SearchKind::Free, "q")),
                 results,
-                known_dois: HashSet::new(),
+                index: Box::default(),
+                log: None,
             },
         ));
         app
@@ -1065,18 +1224,62 @@ mod tests {
 
     #[test]
     fn search_results_populate_state_and_reset_selection() {
-        use std::collections::{HashMap, HashSet};
+        use std::collections::HashMap;
         let mut app = App::new();
         app.search.selected = 5;
         app.update(Message::Job(
             1,
             JobOutcome::Searched {
+                request: Box::new(SearchRequest::new(SearchKind::Free, "q")),
                 results: HashMap::new(),
-                known_dois: HashSet::new(),
+                index: Box::default(),
+                log: None,
             },
         ));
-        assert!(matches!(app.search.state, SearchState::Loaded { .. }));
+        assert!(matches!(app.search.state, SearchState::Loaded(_)));
         assert_eq!(app.search.selected, 0);
+    }
+
+    fn searched_with_log(log: Option<LogOutcome>) -> App {
+        let mut app = App::new();
+        app.update(Message::Job(
+            1,
+            JobOutcome::Searched {
+                request: Box::new(SearchRequest::new(SearchKind::Free, "q")),
+                results: std::collections::HashMap::new(),
+                index: Box::default(),
+                log,
+            },
+        ));
+        app
+    }
+
+    #[test]
+    fn a_logged_search_shows_no_status_message() {
+        let app = searched_with_log(Some(LogOutcome::Written(
+            "research/search-log.jsonl".into(),
+        )));
+        assert!(app.status.message.is_none());
+    }
+
+    #[test]
+    fn a_search_outside_a_library_warns_that_it_was_not_logged() {
+        let app = searched_with_log(Some(LogOutcome::NoLibrary));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Warning, msg)) if msg.contains("isn't recorded")
+        ));
+        assert!(matches!(app.search.state, SearchState::Loaded(_)));
+    }
+
+    #[test]
+    fn a_failed_log_write_is_an_error_but_keeps_the_results() {
+        let app = searched_with_log(Some(LogOutcome::Failed(std::io::Error::other("disk full"))));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg)) if msg.contains("disk full")
+        ));
+        assert!(matches!(app.search.state, SearchState::Loaded(_)));
     }
 
     fn on_candidate_detail() -> App {

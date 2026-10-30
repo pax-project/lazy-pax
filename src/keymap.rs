@@ -24,11 +24,11 @@ pub fn map_key(
         };
     }
     match mode {
-        Mode::Insert(_) => match key.code {
+        Mode::Insert(target) => match key.code {
             KeyCode::Esc => Some(Action::CancelInput),
             KeyCode::Enter => Some(Action::SubmitInput),
             KeyCode::Backspace => Some(Action::InputBackspace),
-            KeyCode::Tab if matches!(screen, Screen::Search) => Some(Action::CycleSearchMode),
+            KeyCode::Tab if *target == InsertTarget::SearchQuery => Some(Action::CycleSearchMode),
             KeyCode::Char(c) => Some(Action::InputChar(c)),
             _ => None,
         },
@@ -71,6 +71,11 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         }
         KeyCode::Char('S') if matches!(screen, Screen::Library) => Some(Action::GoToSearch),
         KeyCode::Tab if matches!(screen, Screen::Search) => Some(Action::CycleSearchMode),
+        KeyCode::Char('m') if matches!(screen, Screen::Search) => Some(Action::LoadMore),
+        KeyCode::Char('M') if matches!(screen, Screen::Search) => Some(Action::LoadAll),
+        KeyCode::Char('F') if matches!(screen, Screen::Search) => {
+            Some(Action::EnterInsert(InsertTarget::SearchFilters))
+        }
         KeyCode::Enter | KeyCode::Char('l')
             if matches!(screen, Screen::Search | Screen::Library) =>
         {
@@ -894,6 +899,35 @@ mod tests {
         assert_eq!(
             map_key(&Screen::Library, &mode, false, &mut pending, key('j')),
             Some(Action::InputChar('j'))
+        );
+    }
+
+    #[test]
+    fn search_keys_load_more_load_all_and_edit_filters() {
+        let mut pending = PendingInput::default();
+        let mut on_search =
+            |c| map_key(&Screen::Search, &Mode::Normal, false, &mut pending, key(c));
+        assert_eq!(on_search('m'), Some(Action::LoadMore));
+        assert_eq!(on_search('M'), Some(Action::LoadAll));
+        assert_eq!(
+            on_search('F'),
+            Some(Action::EnterInsert(InsertTarget::SearchFilters))
+        );
+    }
+
+    #[test]
+    fn tab_cycles_the_search_mode_only_while_editing_the_query() {
+        let mut pending = PendingInput::default();
+        let tab = key_code(KeyCode::Tab);
+        let query = Mode::Insert(InsertTarget::SearchQuery);
+        assert_eq!(
+            map_key(&Screen::Search, &query, false, &mut pending, tab),
+            Some(Action::CycleSearchMode)
+        );
+        let filters = Mode::Insert(InsertTarget::SearchFilters);
+        assert_eq!(
+            map_key(&Screen::Search, &filters, false, &mut pending, tab),
+            None
         );
     }
 }

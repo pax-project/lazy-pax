@@ -2,17 +2,18 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use pax_core::{
-    CandidateId, CandidateWork, CheckReport, FetchOutcome, PaperEdits, PaperRef, PaxError,
-    ProviderError, ProviderId, ResolvedArtifact, SyncReport,
+    CandidateId, CheckReport, FetchOutcome, LogOutcome, PaperEdits, PaperRef, PaxError,
+    ProviderError, ProviderId, ResolvedArtifact, SearchPage, SyncReport,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::message::Message;
 use crate::pax_ctx::PaxCtx;
+use crate::query::{SearchKind, SearchRequest};
 
 pub type JobId = u64;
 
-type SearchResults = HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>;
+pub type SearchResults = HashMap<ProviderId, Result<SearchPage, ProviderError>>;
 
 /// The only module allowed to call into `pax_core` directly — every other
 /// module works with `pax_core` *types* (`Paper`, `PaxError`, ...) but never
@@ -20,9 +21,7 @@ type SearchResults = HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderErro
 /// papers.nix" auditable in one place.
 pub enum JobKind {
     LoadLibrary,
-    SearchAll(String),
-    SearchByAuthor(String),
-    SearchByDoi(String),
+    Search(SearchRequest),
     AddCandidate(CandidateId),
     FetchPaper(String),
     ResolveForOpen(String),
@@ -47,8 +46,14 @@ pub enum JobKind {
 pub enum JobOutcome {
     Library(Result<Vec<pax_core::Paper>, PaxError>),
     Searched {
+        // Boxed: these dwarf every other outcome, and a search finishes
+        // rarely enough that the allocation is free.
+        request: Box<SearchRequest>,
         results: SearchResults,
-        known_dois: std::collections::HashSet<String>,
+        index: Box<pax_core::LibraryIndex>,
+        /// Whether the search was recorded in `research/search-log.jsonl`;
+        /// `None` for a DOI lookup, which isn't logged.
+        log: Option<LogOutcome>,
     },
     Added(Result<PaperRef, PaxError>),
     Fetched {
@@ -252,44 +257,21 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let _ = tx.send(Message::Job(id, JobOutcome::Initialized(result)));
             });
         }
-        network_kind @ (JobKind::SearchAll(_)
-        | JobKind::SearchByAuthor(_)
-        | JobKind::SearchByDoi(_)
-        | JobKind::AddCandidate(_)) => {
-            spawn_network(id, network_kind, ctx, tx);
+        network_kind @ (JobKind::Search(_) | JobKind::AddCandidate(_)) => {
+            tokio::spawn(async move {
+                let outcome = run_network_job(network_kind, ctx).await;
+                let _ = tx.send(Message::Job(id, outcome));
+            });
         }
     }
 }
 
-/// `pax_core`'s async functions that touch providers aren't `Send` — the
-/// `crossref` crate's HTTP client holds an `Rc` internally — so their
-/// futures can't run on `tokio::spawn`'s multi-threaded executor. Each such
-/// job gets its own OS thread with a small current-thread runtime instead:
-/// still fully off the main event loop's task, just not sharing its
-/// runtime. Applies to search and `add_candidate` today; `show_reference`
-/// needs the same treatment if a future step calls it.
-fn spawn_network(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>) {
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to build network runtime");
-        let outcome = runtime.block_on(run_network_job(kind, ctx));
-        let _ = tx.send(Message::Job(id, outcome));
-    });
-}
-
+/// Provider calls run as ordinary tasks on the main runtime's worker
+/// threads: pax-core 2.0's search and `add_candidate` futures are `Send`,
+/// so they never run on (or block) the event loop's own task.
 async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
     match kind {
-        JobKind::SearchAll(query) => {
-            searched(pax_core::search_all(&query, &ctx.config).await, &ctx)
-        }
-        JobKind::SearchByAuthor(author) => {
-            searched(pax_core::search_by_author(&author, &ctx.config).await, &ctx)
-        }
-        JobKind::SearchByDoi(doi) => {
-            searched(pax_core::search_by_doi(&doi, &ctx.config).await, &ctx)
-        }
+        JobKind::Search(request) => search(request, &ctx).await,
         JobKind::AddCandidate(candidate_id) => {
             let result = pax_core::add_candidate(&candidate_id, &ctx.root, &ctx.config).await;
             JobOutcome::Added(result)
@@ -304,16 +286,45 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
         | JobKind::ExportToFile { .. }
         | JobKind::Init
         | JobKind::UploadPdf { .. } => {
-            unreachable!("spawn_network is only called with network JobKinds")
+            unreachable!("run_network_job is only called with network JobKinds")
         }
     }
 }
 
-fn searched(results: SearchResults, ctx: &PaxCtx) -> JobOutcome {
-    let known_dois = pax_core::known_dois(&ctx.root);
+/// Runs `request` the way `pax search` does: free-text and author searches
+/// through the logged, paged entry points; a DOI lookup unpaged and
+/// unlogged, each provider's records wrapped as a page with no total.
+async fn search(request: SearchRequest, ctx: &PaxCtx) -> JobOutcome {
+    let (root, config, options) = (&ctx.root, &ctx.config, &request.options);
+    let (results, log) = match request.kind {
+        SearchKind::Free => {
+            let logged = pax_core::search_all_logged(&request.query, options, root, config).await;
+            (logged.results, Some(logged.log))
+        }
+        SearchKind::Author => {
+            let logged =
+                pax_core::search_by_author_logged(&request.query, options, root, config).await;
+            (logged.results, Some(logged.log))
+        }
+        SearchKind::Doi => {
+            let results = pax_core::search_by_doi(&request.query, config)
+                .await
+                .into_iter()
+                .map(|(provider, result)| {
+                    (
+                        provider,
+                        result.map(|works| SearchPage::new(works, None, None)),
+                    )
+                })
+                .collect();
+            (results, None)
+        }
+    };
     JobOutcome::Searched {
+        request: Box::new(request),
         results,
-        known_dois,
+        index: Box::new(pax_core::LibraryIndex::load(root)),
+        log,
     }
 }
 
