@@ -1,4 +1,7 @@
-use pax_core::{CandidateWork, FilterApplication, LibraryIndex, Limit, ProviderId, SearchPage};
+use pax_core::{
+    CandidateWork, FilterApplication, LibraryIndex, Limit, MergeReport, MergedWork, ProviderId,
+    SearchPage,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
@@ -18,28 +21,46 @@ const PROVIDER_ORDER: [ProviderId; 4] = [
 ];
 
 /// A finished search: the request that produced it, each provider's page
-/// (or error), and the library index its results are checked against.
+/// (or error), the library index its results are checked against, and the
+/// results merged across providers into one row per paper, as `pax search`
+/// lists them.
 pub struct LoadedSearch {
     pub request: SearchRequest,
     pub results: SearchResults,
     pub index: LibraryIndex,
+    pub merged: MergeReport,
 }
 
 impl LoadedSearch {
     pub fn new(request: SearchRequest, results: SearchResults, index: LibraryIndex) -> Self {
+        let merged = pax_core::merge_pages(&results);
         LoadedSearch {
             request,
             results,
             index,
+            merged,
         }
     }
 
-    fn works(&self) -> Vec<CandidateWork> {
-        PROVIDER_ORDER
-            .iter()
-            .filter_map(|p| self.results.get(p).and_then(|r| r.as_ref().ok()))
-            .flat_map(|page| page.works.iter().cloned())
-            .collect()
+    /// One row per paper, its records from different providers merged.
+    pub fn rows(&self) -> &[MergedWork] {
+        &self.merged.works
+    }
+
+    /// A row's flags: in library or excluded if any of its records is, and
+    /// language unknown only if every record is, as `pax search` marks it.
+    fn marks(&self, row: &MergedWork) -> Marks {
+        let unknown = |work: &CandidateWork| {
+            self.results
+                .values()
+                .flatten()
+                .any(|page| page.is_language_unknown(work))
+        };
+        Marks {
+            in_library: row.records().any(|work| self.index.contains(work)),
+            excluded: row.records().any(|work| self.index.is_excluded(work)),
+            language_unknown: row.records().all(unknown),
+        }
     }
 
     /// Whether loading more could retrieve anything: the search pages, and
@@ -55,6 +76,13 @@ impl LoadedSearch {
     }
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Marks {
+    in_library: bool,
+    excluded: bool,
+    language_unknown: bool,
+}
+
 /// Whether `page` stopped at the provider's per-query ceiling (e.g.
 /// Semantic Scholar's 1,000), where asking for more can't help.
 fn at_ceiling(page: &SearchPage) -> bool {
@@ -66,7 +94,7 @@ pub enum SearchState {
     Idle,
     /// A new search is in flight; nothing to show yet.
     Loading(SearchRequest),
-    Loaded(LoadedSearch),
+    Loaded(Box<LoadedSearch>),
 }
 
 pub struct SearchScreen {
@@ -101,7 +129,7 @@ impl SearchScreen {
     }
 
     fn row_count(&self) -> usize {
-        self.loaded().map_or(0, |loaded| loaded.works().len())
+        self.loaded().map_or(0, |loaded| loaded.rows().len())
     }
 
     /// Shows `loaded`. A load-more of the search already showing keeps the
@@ -111,7 +139,7 @@ impl SearchScreen {
             previous.request.kind == loaded.request.kind
                 && previous.request.query == loaded.request.query
         });
-        self.state = SearchState::Loaded(loaded);
+        self.state = SearchState::Loaded(Box::new(loaded));
         if same_search {
             self.selected = self.selected.min(self.row_count().saturating_sub(1));
         } else {
@@ -119,13 +147,13 @@ impl SearchScreen {
         }
     }
 
-    /// The currently-highlighted candidate and whether it's already
-    /// declared in the library, for opening a detail view on it.
+    /// The highlighted row's representative record (the one `add` declares)
+    /// and whether the paper is already declared in the library, by any of
+    /// its records, for opening a detail view on it.
     pub fn selected_candidate(&self) -> Option<(CandidateWork, bool)> {
         let loaded = self.loaded()?;
-        let work = loaded.works().get(self.selected).cloned()?;
-        let in_library = loaded.index.contains(&work);
-        Some((work, in_library))
+        let row = loaded.rows().get(self.selected)?;
+        Some((row.work.clone(), loaded.marks(row).in_library))
     }
 
     pub fn move_down(&mut self) {
@@ -263,19 +291,10 @@ pub fn draw(frame: &mut Frame, screen: &SearchScreen, editing: bool, area: Rect)
             render_message(frame, list_area, &loading_message(request))
         }
         SearchState::Loaded(loaded) => {
-            let items = loaded.works();
-            if items.is_empty() {
+            if loaded.rows().is_empty() {
                 render_message(frame, list_area, "No results.");
             } else {
-                let title = list_title(loaded, items.len());
-                render_list(
-                    frame,
-                    &title,
-                    &items,
-                    &loaded.index,
-                    screen.selected,
-                    list_area,
-                );
+                render_list(frame, loaded, screen.selected, list_area);
             }
         }
     }
@@ -305,37 +324,50 @@ fn render_message(frame: &mut Frame, area: Rect, message: &str) {
     frame.render_widget(Paragraph::new(message).block(block), area);
 }
 
-fn list_title(loaded: &LoadedSearch, rows: usize) -> String {
+/// The list's title: how many papers, the merge counts (records before →
+/// papers after, as `pax search`'s `merged:` line), and the limit.
+fn list_title(loaded: &LoadedSearch) -> String {
+    let merged = &loaded.merged;
+    let mut title = format!(
+        " lazypax — search · {} papers · merged {} → {} ({} duplicates, {} unmatched)",
+        merged.after,
+        merged.before,
+        merged.after,
+        merged.duplicates(),
+        merged.unmatched
+    );
     if loaded.request.is_paged() {
-        format!(
-            " lazypax — search · {rows} results · limit {} per provider ",
+        title.push_str(&format!(
+            " · limit {} per provider",
             loaded.request.limit_label()
-        )
-    } else {
-        format!(" lazypax — search · {rows} results ")
+        ));
     }
+    title.push(' ');
+    title
 }
 
-fn render_list(
-    frame: &mut Frame,
-    title: &str,
-    items: &[CandidateWork],
-    index: &LibraryIndex,
-    selected: usize,
-    area: Rect,
-) {
-    let list_items: Vec<ListItem> = items
+fn render_list(frame: &mut Frame, loaded: &LoadedSearch, selected: usize, area: Rect) {
+    let list_items: Vec<ListItem> = loaded
+        .rows()
         .iter()
-        .map(|work| ListItem::new(format_candidate(work, index)))
+        .map(|row| ListItem::new(format_row(row, &loaded.marks(row))))
         .collect();
     let list = List::new(list_items)
-        .block(Block::default().title(title).borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(list_title(loaded))
+                .borders(Borders::ALL),
+        )
         .highlight_style(SELECTED_ROW_STYLE);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn format_candidate(work: &CandidateWork, index: &LibraryIndex) -> String {
+/// One paper: the providers its records came from, the representative
+/// record's title with the row's flags, then its details.
+fn format_row(row: &MergedWork, marks: &Marks) -> String {
+    let work = &row.work;
+    let providers: Vec<String> = row.providers().iter().map(|p| p.to_string()).collect();
     let authors = if work.authors.is_empty() {
         "—".to_string()
     } else {
@@ -345,13 +377,15 @@ fn format_candidate(work: &CandidateWork, index: &LibraryIndex) -> String {
     let venue = work.venue.as_deref().unwrap_or("no venue");
     let doi = work.doi.as_deref().unwrap_or("no doi");
     let pdf = if work.pdf_url.is_some() { "✓" } else { "✗" };
-    let in_library = index.contains(work);
+    let flag = |set: bool, text: &'static str| if set { text } else { "" };
 
     format!(
-        "[{}] {}{}\n    {authors} · {year} · {venue} · DOI: {doi} · PDF: {pdf}",
-        work.id.provider,
+        "[{}] {}{}{}{}\n    {authors} · {year} · {venue} · DOI: {doi} · PDF: {pdf}",
+        providers.join("+"),
         work.title,
-        if in_library { " [in library]" } else { "" },
+        flag(marks.in_library, " [in library]"),
+        flag(marks.excluded, " [excluded]"),
+        flag(marks.language_unknown, " [language unknown]"),
     )
 }
 
@@ -384,11 +418,11 @@ pub(crate) mod tests {
 
     fn loaded(results: SearchResults) -> SearchScreen {
         SearchScreen {
-            state: SearchState::Loaded(LoadedSearch::new(
+            state: SearchState::Loaded(Box::new(LoadedSearch::new(
                 SearchRequest::new(SearchKind::Free, "q"),
                 results,
                 LibraryIndex::default(),
-            )),
+            ))),
             ..Default::default()
         }
     }
@@ -410,7 +444,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn works_preserve_provider_order_and_skip_errors() {
+    fn rows_preserve_provider_order_and_skip_errors() {
         let mut results = SearchResults::new();
         results.insert(
             ProviderId::Crossref,
@@ -423,10 +457,93 @@ pub(crate) mod tests {
         results.insert(ProviderId::SemanticScholar, Err(ProviderError::NotFound));
 
         let screen = loaded(results);
-        let works = screen.loaded().unwrap().works();
-        assert_eq!(works.len(), 2);
-        assert_eq!(works[0].title, "A"); // OpenAlex before Crossref, per PROVIDER_ORDER
-        assert_eq!(works[1].title, "B");
+        let rows = screen.loaded().unwrap().rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].work.title, "A"); // OpenAlex before Crossref, per PROVIDER_ORDER
+        assert_eq!(rows[1].work.title, "B");
+    }
+
+    /// The same paper from OpenAlex and Crossref, by DOI.
+    fn one_paper_from_two_providers() -> SearchResults {
+        let with_doi = |provider, id| {
+            let mut w = work(provider, id, "Actors");
+            w.doi = Some("10.1/actors".to_string());
+            w
+        };
+        let mut results = SearchResults::new();
+        results.insert(
+            ProviderId::OpenAlex,
+            Ok(page(vec![with_doi(ProviderId::OpenAlex, "W1")], 1)),
+        );
+        results.insert(
+            ProviderId::Crossref,
+            Ok(page(
+                vec![
+                    with_doi(ProviderId::Crossref, "10.1/actors"),
+                    work(ProviderId::Crossref, "2", "Other"),
+                ],
+                2,
+            )),
+        );
+        results
+    }
+
+    #[test]
+    fn records_of_one_paper_merge_into_one_row() {
+        let screen = loaded(one_paper_from_two_providers());
+        let search = screen.loaded().unwrap();
+        assert_eq!(search.rows().len(), 2);
+        assert_eq!(
+            search.rows()[0].providers(),
+            vec![ProviderId::OpenAlex, ProviderId::Crossref]
+        );
+        assert_eq!((search.merged.before, search.merged.after), (3, 2));
+
+        let text = render(&screen);
+        assert!(text.contains("[openalex+crossref] Actors"), "{text}");
+        assert!(text.contains("2 papers · merged 3 → 2 (1 duplicates, 0 unmatched)"));
+    }
+
+    #[test]
+    fn a_row_is_flagged_excluded_by_any_of_its_records() {
+        let mut exclusions = pax_core::Exclusions::default();
+        exclusions.upsert(pax_core::Exclusion::new(
+            "10.1/actors".to_string(),
+            "Actors".to_string(),
+            "off topic".to_string(),
+            pax_core::ExclusionStage::Screening,
+        ));
+        let index = LibraryIndex::new(&pax_core::Library::new(Vec::new()), &exclusions);
+        let screen = SearchScreen {
+            state: SearchState::Loaded(Box::new(LoadedSearch::new(
+                SearchRequest::new(SearchKind::Free, "q"),
+                one_paper_from_two_providers(),
+                index,
+            ))),
+            ..Default::default()
+        };
+        let search = screen.loaded().unwrap();
+        assert!(search.marks(&search.rows()[0]).excluded);
+        assert!(!search.marks(&search.rows()[1]).excluded);
+        assert!(render(&screen).contains("Actors [excluded]"));
+    }
+
+    #[test]
+    fn language_unknown_marks_a_row_only_when_every_record_is() {
+        let results = one_paper_from_two_providers();
+        let crossref_actors = results[&ProviderId::Crossref].as_ref().unwrap().works[0]
+            .id
+            .clone();
+        let mut results = results;
+        let crossref = results.remove(&ProviderId::Crossref).unwrap().unwrap();
+        results.insert(
+            ProviderId::Crossref,
+            Ok(crossref.with_language_unknown(vec![crossref_actors])),
+        );
+        let screen = loaded(results);
+        let search = screen.loaded().unwrap();
+        // OpenAlex's record of the same paper has a language.
+        assert!(!search.marks(&search.rows()[0]).language_unknown);
     }
 
     #[test]
@@ -544,7 +661,7 @@ pub(crate) mod tests {
         let results_of = |n: usize| {
             let mut results = SearchResults::new();
             let works = (0..n)
-                .map(|i| work(ProviderId::OpenAlex, &i.to_string(), "T"))
+                .map(|i| work(ProviderId::OpenAlex, &i.to_string(), &format!("T{i}")))
                 .collect();
             results.insert(ProviderId::OpenAlex, Ok(page(works, 10)));
             results
@@ -590,11 +707,11 @@ pub(crate) mod tests {
             &pax_core::Exclusions::default(),
         );
         let screen = SearchScreen {
-            state: SearchState::Loaded(LoadedSearch::new(
+            state: SearchState::Loaded(Box::new(LoadedSearch::new(
                 SearchRequest::new(SearchKind::Free, "q"),
                 results,
                 index,
-            )),
+            ))),
             ..Default::default()
         };
         let (candidate, in_library) = screen.selected_candidate().unwrap();
@@ -633,7 +750,9 @@ pub(crate) mod tests {
         assert!(text.contains("openalex: retrieved 1 of 120 — more available"));
         assert!(text.contains("crossref: failed — request failed: 429 Too Many Requests"));
         assert!(text.contains("Actors"));
-        assert!(text.contains("1 results · limit 50 per provider"));
+        assert!(text.contains(
+            "1 papers · merged 1 → 1 (0 duplicates, 0 unmatched) · limit 50 per provider"
+        ));
     }
 
     #[test]
