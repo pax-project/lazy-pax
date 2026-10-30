@@ -61,7 +61,8 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
             | Screen::Edit
             | Screen::SyncReport
             | Screen::CheckReport
-            | Screen::Export => Action::Back,
+            | Screen::Export
+            | Screen::Stats => Action::Back,
         }),
         KeyCode::Char('/') if matches!(screen, Screen::Library) => {
             Some(Action::EnterInsert(InsertTarget::LibraryFilter))
@@ -97,6 +98,7 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         KeyCode::Char('s') if matches!(screen, Screen::Library) => Some(Action::TriggerSync),
         KeyCode::Char('c') if matches!(screen, Screen::Library) => Some(Action::TriggerCheck),
         KeyCode::Char('E') if matches!(screen, Screen::Library) => Some(Action::EnterExport),
+        KeyCode::Char('P') if matches!(screen, Screen::Library) => Some(Action::OpenStats),
         KeyCode::Char('i') if matches!(screen, Screen::Library) => Some(Action::TriggerInit),
         KeyCode::Char('i') | KeyCode::Char('p') if matches!(screen, Screen::Export) => {
             Some(Action::EnterInsert(InsertTarget::ExportPath))
@@ -929,5 +931,35 @@ mod tests {
             map_key(&Screen::Search, &filters, false, &mut pending, tab),
             None
         );
+    }
+
+    #[test]
+    fn capital_p_opens_stats_from_library_only() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(
+                &Screen::Library,
+                &Mode::Normal,
+                false,
+                &mut pending,
+                key('P')
+            ),
+            Some(Action::OpenStats)
+        );
+        for screen in [Screen::Search, Screen::Detail, Screen::Stats] {
+            assert_eq!(
+                map_key(&screen, &Mode::Normal, false, &mut pending, key('P')),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn esc_and_j_k_on_the_stats_screen() {
+        let mut pending = PendingInput::default();
+        let mut map = |code| map_key(&Screen::Stats, &Mode::Normal, false, &mut pending, code);
+        assert_eq!(map(key_code(KeyCode::Esc)), Some(Action::Back));
+        assert_eq!(map(key('j')), Some(Action::MoveDown));
+        assert_eq!(map(key('k')), Some(Action::MoveUp));
     }
 }

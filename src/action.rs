@@ -37,4 +37,5 @@ pub enum Action {
     TriggerInit,
     LoadMore,
     LoadAll,
+    OpenStats,
 }
