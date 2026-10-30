@@ -205,6 +205,7 @@ impl EditScreen {
             InsertTarget::UploadPdfPath
             | InsertTarget::LibraryFilter
             | InsertTarget::SearchQuery
+            | InsertTarget::SearchFilters
             | InsertTarget::ExportPath => String::new(),
         };
     }
@@ -232,6 +233,7 @@ impl EditScreen {
             InsertTarget::UploadPdfPath
             | InsertTarget::LibraryFilter
             | InsertTarget::SearchQuery
+            | InsertTarget::SearchFilters
             | InsertTarget::ExportPath => {}
         }
         self.buffer.clear();

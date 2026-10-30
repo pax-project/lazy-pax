@@ -39,6 +39,7 @@ pub enum Mode {
 pub enum InsertTarget {
     LibraryFilter,
     SearchQuery,
+    SearchFilters,
     EditTagAdd,
     EditNotes,
     EditRename,
@@ -200,6 +201,7 @@ impl App {
                 match target {
                     InsertTarget::LibraryFilter => self.library.begin_filter_edit(),
                     InsertTarget::SearchQuery => self.search.begin_query_edit(),
+                    InsertTarget::SearchFilters => self.search.begin_filter_edit(),
                     InsertTarget::ExportPath => self.export.buffer = self.export.path.clone(),
                     edit_target => self.edit.begin_field_edit(edit_target),
                 }
@@ -538,6 +540,7 @@ impl App {
         match self.mode {
             Mode::Insert(InsertTarget::LibraryFilter) => self.library.filter_buffer.push(c),
             Mode::Insert(InsertTarget::SearchQuery) => self.search.query_buffer.push(c),
+            Mode::Insert(InsertTarget::SearchFilters) => self.search.filter_buffer.push(c),
             Mode::Insert(InsertTarget::ExportPath) => self.export.buffer.push(c),
             Mode::Insert(_) => self.edit.buffer.push(c),
             Mode::Normal => {}
@@ -551,6 +554,9 @@ impl App {
             }
             Mode::Insert(InsertTarget::SearchQuery) => {
                 self.search.query_buffer.pop();
+            }
+            Mode::Insert(InsertTarget::SearchFilters) => {
+                self.search.filter_buffer.pop();
             }
             Mode::Insert(InsertTarget::ExportPath) => {
                 self.export.buffer.pop();
@@ -569,6 +575,7 @@ impl App {
                 Vec::new()
             }
             Mode::Insert(InsertTarget::SearchQuery) => self.submit_search_query(),
+            Mode::Insert(InsertTarget::SearchFilters) => self.submit_search_filters(),
             Mode::Insert(InsertTarget::ExportPath) => {
                 self.export.path = self.export.buffer.clone();
                 self.export.buffer.clear();
@@ -612,10 +619,30 @@ impl App {
         if query.is_empty() {
             return Vec::new();
         }
+        self.run_search(self.search.request(query))
+    }
+
+    /// Applies the filter prompt. A malformed prompt leaves the filters as
+    /// they were; valid filters re-run the current query, if there's one
+    /// they apply to, so the results always match the filters shown.
+    fn submit_search_filters(&mut self) -> Vec<Effect> {
+        if let Err(e) = self.search.submit_filter_edit() {
+            self.status.error(e);
+            return Vec::new();
+        }
+        let request = self.search.request(self.search.query.clone());
+        if request.query.is_empty() || !request.is_paged() {
+            self.status
+                .success("Filters set; they apply to the next search");
+            return Vec::new();
+        }
+        self.run_search(request)
+    }
+
+    fn run_search(&mut self, request: SearchRequest) -> Vec<Effect> {
         if !self.start_job() {
             return Vec::new();
         }
-        let request = SearchRequest::new(self.search.kind, query);
         self.search.state = SearchState::Loading(request.clone());
         self.search.selected = 0;
         vec![Effect::Spawn(JobKind::Search(request))]
@@ -1016,6 +1043,69 @@ mod tests {
         );
         assert!(matches!(app.search.state, SearchState::Loading(_)));
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    fn type_filters(app: &mut App, text: &str) -> Vec<Effect> {
+        app.apply(Action::EnterInsert(InsertTarget::SearchFilters));
+        for c in text.chars() {
+            app.apply(Action::InputChar(c));
+        }
+        app.apply(Action::SubmitInput)
+    }
+
+    #[test]
+    fn filters_set_before_a_search_apply_to_it() {
+        let mut app = App::new();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::CancelInput);
+        assert!(type_filters(&mut app, "year:2020 lang:en").is_empty());
+        app.apply(Action::EnterInsert(InsertTarget::SearchQuery));
+        for c in "actors".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        let effects = app.apply(Action::SubmitInput);
+        let [Effect::Spawn(JobKind::Search(request))] = effects.as_slice() else {
+            panic!("expected one search job");
+        };
+        assert_eq!(
+            crate::query::format_filters(&request.options.filters),
+            "year:2020 lang:en"
+        );
+    }
+
+    #[test]
+    fn changing_filters_re_runs_the_current_query() {
+        let mut app = App::new();
+        app.apply(Action::GoToSearch);
+        for c in "actors".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        app.apply(Action::SubmitInput);
+        app.job_running = false; // the first search finished
+        let effects = type_filters(&mut app, "type:preprint");
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::Search(r))]
+                if r.query == "actors" && r.options.filters.doc_type == Some(pax_core::DocType::Preprint)
+        ));
+    }
+
+    #[test]
+    fn a_malformed_filter_is_an_error_and_keeps_the_filters() {
+        let mut app = App::new();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::CancelInput);
+        type_filters(&mut app, "year:2020");
+        let effects = type_filters(&mut app, "year:20");
+        assert!(effects.is_empty());
+        assert_eq!(
+            crate::query::format_filters(&app.search.filters),
+            "year:2020"
+        );
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
     }
 
     #[test]

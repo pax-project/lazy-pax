@@ -1,13 +1,14 @@
 use pax_core::{
-    CandidateWork, FilterApplication, LibraryIndex, Limit, MergeReport, MergedWork, ProviderId,
-    SearchPage,
+    CandidateWork, FilterApplication, Filters, LibraryIndex, Limit, MergeReport, MergedWork,
+    ProviderId, SearchPage,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
+use crate::app::InsertTarget;
 use crate::job::SearchResults;
-use crate::query::{SearchKind, SearchRequest};
+use crate::query::{SearchKind, SearchRequest, format_filters, parse_filters};
 use crate::ui::{SELECTED_ROW_STYLE, wrapped_height};
 
 /// Fixed iteration order shared with the `pax` CLI's own `search`/`show`
@@ -104,6 +105,11 @@ pub struct SearchScreen {
     /// Live edit buffer while `Mode::Insert(InsertTarget::SearchQuery)` is
     /// active; only copied into `query` on submit.
     pub query_buffer: String,
+    /// The year / type / language filters every new search applies.
+    pub filters: Filters,
+    /// Live edit buffer while `Mode::Insert(InsertTarget::SearchFilters)` is
+    /// active; parsed into `filters` on submit.
+    pub filter_buffer: String,
     pub state: SearchState,
     pub selected: usize,
 }
@@ -114,6 +120,8 @@ impl Default for SearchScreen {
             kind: SearchKind::Free,
             query: String::new(),
             query_buffer: String::new(),
+            filters: Filters::default(),
+            filter_buffer: String::new(),
             state: SearchState::Idle,
             selected: 0,
         }
@@ -121,6 +129,24 @@ impl Default for SearchScreen {
 }
 
 impl SearchScreen {
+    /// Opens the filter prompt with the filters already set.
+    pub fn begin_filter_edit(&mut self) {
+        self.filter_buffer = format_filters(&self.filters);
+    }
+
+    /// Parses the filter prompt into `filters`. On an error the filters stay
+    /// as they were and the error is returned for the status line.
+    pub fn submit_filter_edit(&mut self) -> Result<(), String> {
+        self.filters = parse_filters(&self.filter_buffer)?;
+        Ok(())
+    }
+
+    /// A new search for `query` of the current kind, with the current
+    /// filters.
+    pub fn request(&self, query: String) -> SearchRequest {
+        SearchRequest::new(self.kind, query).with_filters(self.filters.clone())
+    }
+
     pub fn loaded(&self) -> Option<&LoadedSearch> {
         match &self.state {
             SearchState::Loaded(loaded) => Some(loaded),
@@ -272,7 +298,7 @@ fn loading_message(request: &SearchRequest) -> String {
     }
 }
 
-pub fn draw(frame: &mut Frame, screen: &SearchScreen, editing: bool, area: Rect) {
+pub fn draw(frame: &mut Frame, screen: &SearchScreen, editing: Option<InsertTarget>, area: Rect) {
     let header = header_text(screen, editing);
     let header_height = wrapped_height(&header, area.width).min(area.height / 2);
     let [header_area, list_area] =
@@ -300,17 +326,34 @@ pub fn draw(frame: &mut Frame, screen: &SearchScreen, editing: bool, area: Rect)
     }
 }
 
-fn header_text(screen: &SearchScreen, editing: bool) -> String {
-    let text = if editing {
-        &screen.query_buffer
-    } else {
-        &screen.query
+fn header_text(screen: &SearchScreen, editing: Option<InsertTarget>) -> String {
+    let field = |target, buffer: &str, committed: String| {
+        if editing == Some(target) {
+            format!("{buffer}▏")
+        } else {
+            committed
+        }
     };
-    let cursor = if editing { "▏" } else { "" };
-    let mut lines = vec![format!(
-        "Search [{}] (Tab: cycle mode, Enter: search, /: edit, Esc: back): {text}{cursor}",
-        screen.kind.label()
-    )];
+    let query = field(
+        InsertTarget::SearchQuery,
+        &screen.query_buffer,
+        screen.query.clone(),
+    );
+    let filters = field(InsertTarget::SearchFilters, &screen.filter_buffer, {
+        let set = format_filters(&screen.filters);
+        if set.is_empty() {
+            "none".to_string()
+        } else {
+            set
+        }
+    });
+    let mut lines = vec![
+        format!(
+            "Search [{}] (Tab: cycle mode, Enter: search, /: edit, Esc: back): {query}",
+            screen.kind.label()
+        ),
+        format!("Filters (F: edit; year:YYYY[-YYYY] type:TYPE lang:CODE): {filters}"),
+    ];
     if let Some(loaded) = screen.loaded() {
         lines.extend(summary_lines(loaded));
     }
@@ -430,7 +473,7 @@ pub(crate) mod tests {
     pub(crate) fn render(screen: &SearchScreen) -> String {
         let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
         terminal
-            .draw(|frame| draw(frame, screen, false, frame.area()))
+            .draw(|frame| draw(frame, screen, None, frame.area()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
