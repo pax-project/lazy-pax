@@ -41,6 +41,7 @@ pub enum JobKind {
         citation_key: String,
         local_path: PathBuf,
     },
+    Stats,
 }
 
 pub enum JobOutcome {
@@ -88,6 +89,7 @@ pub enum JobOutcome {
         /// `upload_pdf`), not just returned for display.
         result: Result<String, PaxError>,
     },
+    Stats(Result<pax_core::Stats, PaxError>),
 }
 
 /// Why a declared paper couldn't be resolved to an openable path. Mirrors
@@ -257,6 +259,15 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let _ = tx.send(Message::Job(id, JobOutcome::Initialized(result)));
             });
         }
+        JobKind::Stats => {
+            tokio::spawn(async move {
+                let root = ctx.root.clone();
+                let result = tokio::task::spawn_blocking(move || pax_core::stats(&root))
+                    .await
+                    .expect("stats task panicked");
+                let _ = tx.send(Message::Job(id, JobOutcome::Stats(result)));
+            });
+        }
         network_kind @ (JobKind::Search(_) | JobKind::AddCandidate(_)) => {
             tokio::spawn(async move {
                 let outcome = run_network_job(network_kind, ctx).await;
@@ -285,7 +296,8 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
         | JobKind::Check
         | JobKind::ExportToFile { .. }
         | JobKind::Init
-        | JobKind::UploadPdf { .. } => {
+        | JobKind::UploadPdf { .. }
+        | JobKind::Stats => {
             unreachable!("run_network_job is only called with network JobKinds")
         }
     }

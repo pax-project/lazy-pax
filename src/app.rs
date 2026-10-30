@@ -13,6 +13,7 @@ use crate::ui::edit::EditScreen;
 use crate::ui::export::ExportScreen;
 use crate::ui::library::{LibraryScreen, LibraryState};
 use crate::ui::search::{LoadedSearch, SearchScreen, SearchState};
+use crate::ui::stats::{StatsScreen, StatsState};
 
 /// Which top-level view is showing. Gains a variant per screen as each one
 /// is built (see pax-project/.github's build-log.md).
@@ -25,6 +26,7 @@ pub enum Screen {
     SyncReport,
     CheckReport,
     Export,
+    Stats,
 }
 
 /// Normal (navigation) vs. text-entry input. `Insert` carries which field
@@ -92,6 +94,7 @@ pub struct App {
     pub check_report: Option<Vec<pax_core::CheckReport>>,
     pub check_selected: usize,
     pub export: ExportScreen,
+    pub stats: StatsScreen,
 }
 
 impl App {
@@ -114,6 +117,7 @@ impl App {
             check_report: None,
             check_selected: 0,
             export: ExportScreen::default(),
+            stats: StatsScreen::default(),
         }
     }
 
@@ -250,7 +254,8 @@ impl App {
                     | Screen::Edit
                     | Screen::SyncReport
                     | Screen::CheckReport
-                    | Screen::Export => None,
+                    | Screen::Export
+                    | Screen::Stats => None,
                 };
                 if let Some(subject) = subject {
                     self.detail.subject = Some(subject);
@@ -318,6 +323,7 @@ impl App {
             Action::TriggerInit => self.trigger_init(),
             Action::LoadMore => self.load_more(false),
             Action::LoadAll => self.load_more(true),
+            Action::OpenStats => self.open_stats(),
         }
     }
 
@@ -330,6 +336,21 @@ impl App {
         }
         self.status.pending("Initializing library…");
         vec![Effect::Spawn(JobKind::Init)]
+    }
+
+    /// Opens the PRISMA stats screen and recomputes its counts from the
+    /// library files every time, so it never shows numbers older than the
+    /// moment it was opened.
+    fn open_stats(&mut self) -> Vec<Effect> {
+        if self.screen != Screen::Library {
+            return Vec::new();
+        }
+        if !self.start_job() {
+            return Vec::new();
+        }
+        self.stats = StatsScreen::default();
+        self.push_screen(Screen::Stats);
+        vec![Effect::Spawn(JobKind::Stats)]
     }
 
     fn save_export(&mut self) -> Vec<Effect> {
@@ -404,7 +425,8 @@ impl App {
             | Screen::Edit
             | Screen::SyncReport
             | Screen::CheckReport
-            | Screen::Export => None,
+            | Screen::Export
+            | Screen::Stats => None,
         }
     }
 
@@ -487,6 +509,7 @@ impl App {
                 let len = self.check_report.as_ref().map_or(0, Vec::len);
                 move_index_down(&mut self.check_selected, len);
             }
+            Screen::Stats => self.stats.scroll_down(),
             Screen::Detail | Screen::Export => {}
         }
     }
@@ -504,6 +527,7 @@ impl App {
                 let len = self.check_report.as_ref().map_or(0, Vec::len);
                 move_index_up(&mut self.check_selected, len);
             }
+            Screen::Stats => self.stats.scroll_up(),
             Screen::Detail | Screen::Export => {}
         }
     }
@@ -515,6 +539,7 @@ impl App {
             Screen::Edit => self.edit.go_top(),
             Screen::SyncReport => self.sync_selected = 0,
             Screen::CheckReport => self.check_selected = 0,
+            Screen::Stats => self.stats.scroll = 0,
             Screen::Detail | Screen::Export => {}
         }
     }
@@ -532,6 +557,7 @@ impl App {
                 let len = self.check_report.as_ref().map_or(0, Vec::len);
                 self.check_selected = len.saturating_sub(1);
             }
+            Screen::Stats => self.stats.scroll_bottom(),
             Screen::Detail | Screen::Export => {}
         }
     }
@@ -844,6 +870,11 @@ impl App {
                 return vec![Effect::Spawn(JobKind::LoadLibrary)];
             }
             JobOutcome::Initialized(Err(e)) => self.status.error(e.to_string()),
+            JobOutcome::Stats(Ok(stats)) => self.stats.state = StatsState::Loaded(stats),
+            JobOutcome::Stats(Err(e)) => {
+                self.status.error(format!("stats: {e}"));
+                self.stats.state = StatsState::Failed(e.to_string());
+            }
             JobOutcome::Uploaded {
                 citation_key,
                 result,
@@ -2211,5 +2242,81 @@ mod tests {
         ));
         assert!(effects.is_empty());
         assert!(!app.job_running);
+    }
+
+    #[test]
+    fn opening_stats_from_library_pushes_the_screen_and_spawns_the_job() {
+        let mut app = with_two_papers();
+        let effects = app.apply(Action::OpenStats);
+        assert!(matches!(app.screen, Screen::Stats));
+        assert!(matches!(app.stats.state, StatsState::Loading));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::Stats)]
+        ));
+        assert!(app.job_running);
+    }
+
+    #[test]
+    fn opening_stats_is_library_only_and_respects_a_running_job() {
+        let mut app = App::new();
+        app.apply(Action::GoToSearch);
+        assert!(app.apply(Action::OpenStats).is_empty());
+        assert!(matches!(app.screen, Screen::Search));
+
+        let mut app = with_two_papers();
+        app.job_running = true;
+        assert!(app.apply(Action::OpenStats).is_empty());
+        assert!(matches!(app.screen, Screen::Library));
+    }
+
+    #[test]
+    fn stats_outcome_loads_the_counts() {
+        let mut app = with_two_papers();
+        app.apply(Action::OpenStats);
+        app.update(Message::Job(
+            2,
+            JobOutcome::Stats(Ok(pax_core::Stats::default())),
+        ));
+        assert!(matches!(app.stats.state, StatsState::Loaded(_)));
+        assert!(!app.job_running);
+        assert!(app.status.message.is_none());
+    }
+
+    #[test]
+    fn a_stats_error_shows_in_the_screen_and_the_status_line() {
+        let mut app = with_two_papers();
+        app.apply(Action::OpenStats);
+        app.update(Message::Job(
+            2,
+            JobOutcome::Stats(Err(PaxError::NoSuchPaper("x".to_string()))),
+        ));
+        assert!(matches!(app.stats.state, StatsState::Failed(_)));
+        assert!(matches!(app.screen, Screen::Stats));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, _))
+        ));
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn reopening_stats_recomputes_instead_of_showing_stale_counts() {
+        let mut app = with_two_papers();
+        app.apply(Action::OpenStats);
+        app.update(Message::Job(
+            2,
+            JobOutcome::Stats(Ok(pax_core::Stats::default())),
+        ));
+        app.stats.scroll = 3;
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Library));
+        let effects = app.apply(Action::OpenStats);
+        assert!(matches!(app.stats.state, StatsState::Loading));
+        assert_eq!(app.stats.scroll, 0);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn(JobKind::Stats)]
+        ));
     }
 }
