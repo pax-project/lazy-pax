@@ -635,14 +635,8 @@ impl App {
             JobOutcome::Library(Err(e)) => {
                 self.status.error(e.to_string());
             }
-            JobOutcome::Searched {
-                results,
-                known_dois,
-            } => {
-                self.search.state = SearchState::Loaded {
-                    results,
-                    known_dois,
-                };
+            JobOutcome::Searched { results, index } => {
+                self.search.state = SearchState::Loaded { results, index };
                 self.search.selected = 0;
             }
             JobOutcome::Added(Ok(paper_ref)) => {
@@ -989,7 +983,7 @@ mod tests {
     }
 
     fn with_search_results() -> App {
-        use std::collections::{HashMap, HashSet};
+        use std::collections::HashMap;
         let mut app = App::new();
         let mut results = HashMap::new();
         results.insert(pax_core::ProviderId::OpenAlex, Ok(vec![candidate_work()]));
@@ -997,7 +991,7 @@ mod tests {
             1,
             JobOutcome::Searched {
                 results,
-                known_dois: HashSet::new(),
+                index: pax_core::LibraryIndex::default(),
             },
         ));
         app
@@ -1065,14 +1059,14 @@ mod tests {
 
     #[test]
     fn search_results_populate_state_and_reset_selection() {
-        use std::collections::{HashMap, HashSet};
+        use std::collections::HashMap;
         let mut app = App::new();
         app.search.selected = 5;
         app.update(Message::Job(
             1,
             JobOutcome::Searched {
                 results: HashMap::new(),
-                known_dois: HashSet::new(),
+                index: pax_core::LibraryIndex::default(),
             },
         ));
         assert!(matches!(app.search.state, SearchState::Loaded { .. }));

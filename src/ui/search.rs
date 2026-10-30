@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use pax_core::{CandidateWork, ProviderError, ProviderId};
+use pax_core::{CandidateWork, LibraryIndex, ProviderError, ProviderId};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -47,7 +47,7 @@ pub enum SearchState {
     Loading,
     Loaded {
         results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>,
-        known_dois: HashSet<String>,
+        index: LibraryIndex,
     },
 }
 
@@ -85,18 +85,12 @@ impl SearchScreen {
     /// The currently-highlighted candidate and whether it's already
     /// declared in the library, for opening a detail view on it.
     pub fn selected_candidate(&self) -> Option<(CandidateWork, bool)> {
-        let (results, known_dois) = match &self.state {
-            SearchState::Loaded {
-                results,
-                known_dois,
-            } => (results, known_dois),
+        let (results, index) = match &self.state {
+            SearchState::Loaded { results, index } => (results, index),
             _ => return None,
         };
         let work = flatten(results).get(self.selected).cloned()?;
-        let in_library = work
-            .doi
-            .as_deref()
-            .is_some_and(|d| known_dois.contains(pax_core::normalize_doi(d)));
+        let in_library = index.contains(&work);
         Some((work, in_library))
     }
 
@@ -174,15 +168,12 @@ pub fn draw(frame: &mut Frame, screen: &SearchScreen, editing: bool, area: Rect)
             render_message(frame, list_area, "Type a query and press Enter to search.")
         }
         SearchState::Loading => render_message(frame, list_area, "Searching…"),
-        SearchState::Loaded {
-            results,
-            known_dois,
-        } => {
+        SearchState::Loaded { results, index } => {
             let items = flatten(results);
             if items.is_empty() {
                 render_message(frame, list_area, "No results.");
             } else {
-                render_list(frame, &items, known_dois, screen.selected, list_area);
+                render_list(frame, &items, index, screen.selected, list_area);
             }
         }
     }
@@ -218,13 +209,13 @@ fn render_message(frame: &mut Frame, area: Rect, message: &str) {
 fn render_list(
     frame: &mut Frame,
     items: &[CandidateWork],
-    known_dois: &HashSet<String>,
+    index: &LibraryIndex,
     selected: usize,
     area: Rect,
 ) {
     let list_items: Vec<ListItem> = items
         .iter()
-        .map(|work| ListItem::new(format_candidate(work, known_dois)))
+        .map(|work| ListItem::new(format_candidate(work, index)))
         .collect();
     let list = List::new(list_items)
         .block(
@@ -237,7 +228,7 @@ fn render_list(
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn format_candidate(work: &CandidateWork, known_dois: &HashSet<String>) -> String {
+fn format_candidate(work: &CandidateWork, index: &LibraryIndex) -> String {
     let authors = if work.authors.is_empty() {
         "—".to_string()
     } else {
@@ -247,10 +238,7 @@ fn format_candidate(work: &CandidateWork, known_dois: &HashSet<String>) -> Strin
     let venue = work.venue.as_deref().unwrap_or("no venue");
     let doi = work.doi.as_deref().unwrap_or("no doi");
     let pdf = if work.pdf_url.is_some() { "✓" } else { "✗" };
-    let in_library = work
-        .doi
-        .as_deref()
-        .is_some_and(|d| known_dois.contains(pax_core::normalize_doi(d)));
+    let in_library = index.contains(work);
 
     format!(
         "[{}] {}{}\n    {authors} · {year} · {venue} · DOI: {doi} · PDF: {pdf}",
@@ -287,7 +275,7 @@ mod tests {
         SearchScreen {
             state: SearchState::Loaded {
                 results,
-                known_dois: HashSet::new(),
+                index: LibraryIndex::default(),
             },
             ..Default::default()
         }
@@ -357,19 +345,30 @@ mod tests {
     }
 
     #[test]
-    fn selected_candidate_reports_in_library_from_normalized_doi() {
+    fn selected_candidate_reports_in_library_by_identity() {
         let mut w = work(ProviderId::OpenAlex, "1", "A");
         w.doi = Some("https://doi.org/10.1145/foo".to_string());
         let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> =
             HashMap::new();
         results.insert(ProviderId::OpenAlex, Ok(vec![w]));
-        let mut known_dois = HashSet::new();
-        known_dois.insert("10.1145/foo".to_string());
-        let screen = SearchScreen {
-            state: SearchState::Loaded {
-                results,
-                known_dois,
+        let paper = pax_core::Paper {
+            identity: pax_core::Identity {
+                doi: Some("10.1145/foo".to_string()),
+                title: "A".to_string(),
+                ..Default::default()
             },
+            artifact: pax_core::Artifact::default(),
+            local: pax_core::Local {
+                citation_key: "a2020".to_string(),
+                ..Default::default()
+            },
+        };
+        let index = LibraryIndex::new(
+            &pax_core::Library::new(vec![paper]),
+            &pax_core::Exclusions::default(),
+        );
+        let screen = SearchScreen {
+            state: SearchState::Loaded { results, index },
             ..Default::default()
         };
         let (candidate, in_library) = screen.selected_candidate().unwrap();

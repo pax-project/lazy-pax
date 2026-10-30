@@ -48,7 +48,7 @@ pub enum JobOutcome {
     Library(Result<Vec<pax_core::Paper>, PaxError>),
     Searched {
         results: SearchResults,
-        known_dois: std::collections::HashSet<String>,
+        index: pax_core::LibraryIndex,
     },
     Added(Result<PaperRef, PaxError>),
     Fetched {
@@ -310,11 +310,8 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
 }
 
 fn searched(results: SearchResults, ctx: &PaxCtx) -> JobOutcome {
-    let known_dois = pax_core::known_dois(&ctx.root);
-    JobOutcome::Searched {
-        results,
-        known_dois,
-    }
+    let index = pax_core::LibraryIndex::load(&ctx.root);
+    JobOutcome::Searched { results, index }
 }
 
 fn load_library(root: &Path) -> Result<Vec<pax_core::Paper>, PaxError> {
