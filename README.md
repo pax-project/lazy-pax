@@ -43,6 +43,7 @@ lazy-pax
 | `d` | Remove (asks for confirmation) |
 | `s` / `c` | Sync / check the whole library |
 | `E` | Export the library as BibTeX |
+| `P` | Show PRISMA stats (see below) |
 | `i` | Initialize a library (if none exists) / edit a field (in Edit) |
 | `w` | Save (in Edit or Export) |
 | `q` | Quit |
@@ -58,6 +59,12 @@ Search shows the same information `pax search` prints:
 - **Filters:** `F` takes year, document type and language in the syntax of `pax search --year/--type/--lang`, and re-runs the current search.
 - **Load more:** pax-core's search has no offset, so `m` re-runs the search with each provider's limit doubled, and `M` asks for every result (slow for large result sets).
 - **Search log:** every free-text and author search is recorded in `research/search-log.jsonl`, the same log the CLI writes, so `pax stats` counts it. A DOI lookup isn't logged, as in the CLI.
+
+### PRISMA stats
+
+`P` on the library opens a read-only screen with the PRISMA 2020 flow-diagram counts that `pax stats` prints, laid out the same way: records identified per provider (databases and citation searching), duplicates removed, records screened and excluded, reports sought, not retrieved and assessed, full-text exclusions per reason, and studies included. They come from `pax_core::stats`, which reads `papers.nix`, `excluded.nix` and `search-log.jsonl` locally, without the network, and are recomputed each time the screen opens. `j`/`k` scroll; `Esc` goes back.
+
+If some search-log lines were skipped because their provider failed, the screen says how many. A log line pax-core can't read shows its error in place of the counts. As with `pax stats`, the boxes only balance when every declared or excluded paper was found by a logged search: a paper added or excluded any other way is still counted in its own box.
 
 ## Configuration
 
