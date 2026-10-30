@@ -4,6 +4,11 @@
 # Commits defaults release-plz expects.
 custom_minor_increment_regex = "^feature"
 publish = false # lazy-pax is an end-user binary, not a library
+# Not on crates.io, so the last release is read from the latest v* git tag
+# rather than the registry (which never has lazy-pax, so would make every
+# release PR re-propose the current version). Also what lets release-plz
+# tag and cut a GitHub release for a publish = false package.
+git_only = true
 
 [changelog]
 commit_parsers = [
