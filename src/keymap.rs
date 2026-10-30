@@ -29,6 +29,9 @@ pub fn map_key(
             KeyCode::Enter => Some(Action::SubmitInput),
             KeyCode::Backspace => Some(Action::InputBackspace),
             KeyCode::Tab if *target == InsertTarget::SearchQuery => Some(Action::CycleSearchMode),
+            KeyCode::Tab if *target == InsertTarget::ExcludeReason => {
+                Some(Action::CycleExclusionStage)
+            }
             KeyCode::Char(c) => Some(Action::InputChar(c)),
             _ => None,
         },
@@ -109,6 +112,9 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
             Some(Action::EnterInsert(InsertTarget::EditTagAdd))
         }
         KeyCode::Char('x') if matches!(screen, Screen::Edit) => Some(Action::RemoveLastTag),
+        KeyCode::Char('x') if matches!(screen, Screen::Search | Screen::Detail) => {
+            Some(Action::TriggerExclude)
+        }
         KeyCode::Char('u') if matches!(screen, Screen::Edit) => {
             Some(Action::EnterInsert(InsertTarget::UploadPdfPath))
         }
@@ -952,6 +958,45 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn x_excludes_on_search_and_detail_and_still_removes_a_tag_in_edit() {
+        let mut pending = PendingInput::default();
+        for screen in [Screen::Search, Screen::Detail] {
+            assert_eq!(
+                map_key(&screen, &Mode::Normal, false, &mut pending, key('x')),
+                Some(Action::TriggerExclude)
+            );
+        }
+        assert_eq!(
+            map_key(&Screen::Edit, &Mode::Normal, false, &mut pending, key('x')),
+            Some(Action::RemoveLastTag)
+        );
+        assert_eq!(
+            map_key(
+                &Screen::Library,
+                &Mode::Normal,
+                false,
+                &mut pending,
+                key('x')
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_exclusion_reason_prompt_types_text_and_tab_toggles_the_stage() {
+        let mode = Mode::Insert(InsertTarget::ExcludeReason);
+        let mut pending = PendingInput::default();
+        let mut map = |code| map_key(&Screen::Search, &mode, false, &mut pending, code);
+        assert_eq!(map(key('x')), Some(Action::InputChar('x')));
+        assert_eq!(
+            map(key_code(KeyCode::Tab)),
+            Some(Action::CycleExclusionStage)
+        );
+        assert_eq!(map(key_code(KeyCode::Enter)), Some(Action::SubmitInput));
+        assert_eq!(map(key_code(KeyCode::Esc)), Some(Action::CancelInput));
     }
 
     #[test]

@@ -173,6 +173,15 @@ impl SearchScreen {
         }
     }
 
+    /// Swaps in a freshly loaded library index — after an exclusion, so the
+    /// rows' flags show what `papers.nix` and `excluded.nix` now say without
+    /// re-running the search.
+    pub fn replace_index(&mut self, index: LibraryIndex) {
+        if let SearchState::Loaded(loaded) = &mut self.state {
+            loaded.index = index;
+        }
+    }
+
     /// The highlighted row's representative record (the one `add` declares)
     /// and whether the paper is already declared in the library, by any of
     /// its records, for opening a detail view on it.

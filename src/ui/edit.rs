@@ -206,7 +206,8 @@ impl EditScreen {
             | InsertTarget::LibraryFilter
             | InsertTarget::SearchQuery
             | InsertTarget::SearchFilters
-            | InsertTarget::ExportPath => String::new(),
+            | InsertTarget::ExportPath
+            | InsertTarget::ExcludeReason => String::new(),
         };
     }
 
@@ -234,7 +235,8 @@ impl EditScreen {
             | InsertTarget::LibraryFilter
             | InsertTarget::SearchQuery
             | InsertTarget::SearchFilters
-            | InsertTarget::ExportPath => {}
+            | InsertTarget::ExportPath
+            | InsertTarget::ExcludeReason => {}
         }
         self.buffer.clear();
     }

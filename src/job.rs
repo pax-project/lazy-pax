@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use pax_core::{
-    CandidateId, CheckReport, FetchOutcome, LogOutcome, PaperEdits, PaperRef, PaxError,
-    ProviderError, ProviderId, ResolvedArtifact, SearchPage, SyncReport,
+    CandidateId, CheckReport, Exclusion, ExclusionStage, FetchOutcome, LibraryIndex, LogOutcome,
+    PaperEdits, PaperRef, PaxError, ProviderError, ProviderId, ResolvedArtifact, SearchPage,
+    SyncReport,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -42,6 +43,19 @@ pub enum JobKind {
         local_path: PathBuf,
     },
     Stats,
+    Exclude(ExcludeRequest),
+}
+
+/// A search result to record in `research/excluded.nix`, through
+/// `pax_core::exclude_paper`: its representative record's `provider:id`
+/// and title (passed along so the exclusion has one even if the provider
+/// can't be reached), with the user's reason and stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcludeRequest {
+    pub reference: String,
+    pub title: String,
+    pub reason: String,
+    pub stage: ExclusionStage,
 }
 
 pub enum JobOutcome {
@@ -90,6 +104,12 @@ pub enum JobOutcome {
         result: Result<String, PaxError>,
     },
     Stats(Result<pax_core::Stats, PaxError>),
+    /// The recorded exclusion, with the library index reloaded after it so
+    /// the search's flags come from `excluded.nix` itself.
+    Excluded {
+        reference: String,
+        result: Result<(Exclusion, Box<LibraryIndex>), PaxError>,
+    },
 }
 
 /// Why a declared paper couldn't be resolved to an openable path. Mirrors
@@ -268,7 +288,7 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let _ = tx.send(Message::Job(id, JobOutcome::Stats(result)));
             });
         }
-        network_kind @ (JobKind::Search(_) | JobKind::AddCandidate(_)) => {
+        network_kind @ (JobKind::Search(_) | JobKind::AddCandidate(_) | JobKind::Exclude(_)) => {
             tokio::spawn(async move {
                 let outcome = run_network_job(network_kind, ctx).await;
                 let _ = tx.send(Message::Job(id, outcome));
@@ -287,6 +307,7 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
             let result = pax_core::add_candidate(&candidate_id, &ctx.root, &ctx.config).await;
             JobOutcome::Added(result)
         }
+        JobKind::Exclude(request) => exclude(request, &ctx).await,
         JobKind::LoadLibrary
         | JobKind::FetchPaper(_)
         | JobKind::ResolveForOpen(_)
@@ -337,6 +358,26 @@ async fn search(request: SearchRequest, ctx: &PaxCtx) -> JobOutcome {
         results,
         index: Box::new(pax_core::LibraryIndex::load(root)),
         log,
+    }
+}
+
+/// Excludes the paper, then reloads the library index the search flags its
+/// rows from. `exclude_paper` resolves the reference with its provider, so
+/// this runs as a network job, never on the UI thread.
+async fn exclude(request: ExcludeRequest, ctx: &PaxCtx) -> JobOutcome {
+    let result = pax_core::exclude_paper(
+        &request.reference,
+        &request.reason,
+        request.stage,
+        Some(&request.title),
+        &ctx.root,
+        &ctx.config,
+    )
+    .await
+    .map(|exclusion| (exclusion, Box::new(LibraryIndex::load(&ctx.root))));
+    JobOutcome::Excluded {
+        reference: request.reference,
+        result,
     }
 }
 
