@@ -4,6 +4,7 @@ mod job;
 mod keymap;
 mod message;
 mod pax_ctx;
+mod query;
 mod status;
 mod terminal;
 mod ui;

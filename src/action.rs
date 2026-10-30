@@ -35,4 +35,6 @@ pub enum Action {
     EnterExport,
     SaveExport,
     TriggerInit,
+    LoadMore,
+    LoadAll,
 }

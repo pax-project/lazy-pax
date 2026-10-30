@@ -71,6 +71,8 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
         }
         KeyCode::Char('S') if matches!(screen, Screen::Library) => Some(Action::GoToSearch),
         KeyCode::Tab if matches!(screen, Screen::Search) => Some(Action::CycleSearchMode),
+        KeyCode::Char('m') if matches!(screen, Screen::Search) => Some(Action::LoadMore),
+        KeyCode::Char('M') if matches!(screen, Screen::Search) => Some(Action::LoadAll),
         KeyCode::Enter | KeyCode::Char('l')
             if matches!(screen, Screen::Search | Screen::Library) =>
         {

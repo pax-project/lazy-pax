@@ -3,12 +3,13 @@ use std::path::{Path, PathBuf};
 
 use pax_core::{
     CandidateId, CheckReport, FetchOutcome, LogOutcome, PaperEdits, PaperRef, PaxError,
-    ProviderError, ProviderId, ResolvedArtifact, SearchOptions, SearchPage, SyncReport,
+    ProviderError, ProviderId, ResolvedArtifact, SearchPage, SyncReport,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::message::Message;
 use crate::pax_ctx::PaxCtx;
+use crate::query::{SearchKind, SearchRequest};
 
 pub type JobId = u64;
 
@@ -20,9 +21,7 @@ pub type SearchResults = HashMap<ProviderId, Result<SearchPage, ProviderError>>;
 /// papers.nix" auditable in one place.
 pub enum JobKind {
     LoadLibrary,
-    SearchAll(String),
-    SearchByAuthor(String),
-    SearchByDoi(String),
+    Search(SearchRequest),
     AddCandidate(CandidateId),
     FetchPaper(String),
     ResolveForOpen(String),
@@ -47,8 +46,11 @@ pub enum JobKind {
 pub enum JobOutcome {
     Library(Result<Vec<pax_core::Paper>, PaxError>),
     Searched {
+        // Boxed: these dwarf every other outcome, and a search finishes
+        // rarely enough that the allocation is free.
+        request: Box<SearchRequest>,
         results: SearchResults,
-        index: pax_core::LibraryIndex,
+        index: Box<pax_core::LibraryIndex>,
         /// Whether the search was recorded in `research/search-log.jsonl`;
         /// `None` for a DOI lookup, which isn't logged.
         log: Option<LogOutcome>,
@@ -255,10 +257,7 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
                 let _ = tx.send(Message::Job(id, JobOutcome::Initialized(result)));
             });
         }
-        network_kind @ (JobKind::SearchAll(_)
-        | JobKind::SearchByAuthor(_)
-        | JobKind::SearchByDoi(_)
-        | JobKind::AddCandidate(_)) => {
+        network_kind @ (JobKind::Search(_) | JobKind::AddCandidate(_)) => {
             tokio::spawn(async move {
                 let outcome = run_network_job(network_kind, ctx).await;
                 let _ = tx.send(Message::Job(id, outcome));
@@ -272,33 +271,7 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
 /// so they never run on (or block) the event loop's own task.
 async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
     match kind {
-        JobKind::SearchAll(query) => {
-            let options = SearchOptions::default();
-            let logged =
-                pax_core::search_all_logged(&query, &options, &ctx.root, &ctx.config).await;
-            searched(logged.results, Some(logged.log), &ctx)
-        }
-        JobKind::SearchByAuthor(author) => {
-            let options = SearchOptions::default();
-            let logged =
-                pax_core::search_by_author_logged(&author, &options, &ctx.root, &ctx.config).await;
-            searched(logged.results, Some(logged.log), &ctx)
-        }
-        JobKind::SearchByDoi(doi) => {
-            // A DOI lookup resolves one record per provider rather than
-            // paging a result set, and the `pax` CLI doesn't log it either.
-            let results = pax_core::search_by_doi(&doi, &ctx.config)
-                .await
-                .into_iter()
-                .map(|(provider, result)| {
-                    (
-                        provider,
-                        result.map(|works| SearchPage::new(works, None, None)),
-                    )
-                })
-                .collect();
-            searched(results, None, &ctx)
-        }
+        JobKind::Search(request) => search(request, &ctx).await,
         JobKind::AddCandidate(candidate_id) => {
             let result = pax_core::add_candidate(&candidate_id, &ctx.root, &ctx.config).await;
             JobOutcome::Added(result)
@@ -318,11 +291,39 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
     }
 }
 
-fn searched(results: SearchResults, log: Option<LogOutcome>, ctx: &PaxCtx) -> JobOutcome {
-    let index = pax_core::LibraryIndex::load(&ctx.root);
+/// Runs `request` the way `pax search` does: free-text and author searches
+/// through the logged, paged entry points; a DOI lookup unpaged and
+/// unlogged, each provider's records wrapped as a page with no total.
+async fn search(request: SearchRequest, ctx: &PaxCtx) -> JobOutcome {
+    let (root, config, options) = (&ctx.root, &ctx.config, &request.options);
+    let (results, log) = match request.kind {
+        SearchKind::Free => {
+            let logged = pax_core::search_all_logged(&request.query, options, root, config).await;
+            (logged.results, Some(logged.log))
+        }
+        SearchKind::Author => {
+            let logged =
+                pax_core::search_by_author_logged(&request.query, options, root, config).await;
+            (logged.results, Some(logged.log))
+        }
+        SearchKind::Doi => {
+            let results = pax_core::search_by_doi(&request.query, config)
+                .await
+                .into_iter()
+                .map(|(provider, result)| {
+                    (
+                        provider,
+                        result.map(|works| SearchPage::new(works, None, None)),
+                    )
+                })
+                .collect();
+            (results, None)
+        }
+    };
     JobOutcome::Searched {
+        request: Box::new(request),
         results,
-        index,
+        index: Box::new(pax_core::LibraryIndex::load(root)),
         log,
     }
 }

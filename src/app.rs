@@ -1,17 +1,18 @@
 use std::io::ErrorKind;
 
 use crossterm::event::{Event, KeyEventKind};
-use pax_core::{FetchOutcome, LogOutcome, PaxError};
+use pax_core::{FetchOutcome, Limit, LogOutcome, PaxError};
 
 use crate::action::Action;
 use crate::job::{JobKind, JobOutcome};
 use crate::message::{Effect, Message};
+use crate::query::SearchRequest;
 use crate::status::StatusBar;
 use crate::ui::detail::{DetailScreen, DetailSubject};
 use crate::ui::edit::EditScreen;
 use crate::ui::export::ExportScreen;
 use crate::ui::library::{LibraryScreen, LibraryState};
-use crate::ui::search::{SearchKind, SearchScreen, SearchState};
+use crate::ui::search::{LoadedSearch, SearchScreen, SearchState};
 
 /// Which top-level view is showing. Gains a variant per screen as each one
 /// is built (see pax-project/.github's build-log.md).
@@ -313,6 +314,8 @@ impl App {
             }
             Action::SaveExport => self.save_export(),
             Action::TriggerInit => self.trigger_init(),
+            Action::LoadMore => self.load_more(false),
+            Action::LoadAll => self.load_more(true),
         }
     }
 
@@ -612,14 +615,52 @@ impl App {
         if !self.start_job() {
             return Vec::new();
         }
-        self.search.state = SearchState::Loading;
+        let request = SearchRequest::new(self.search.kind, query);
+        self.search.state = SearchState::Loading(request.clone());
         self.search.selected = 0;
-        let job = match self.search.kind {
-            SearchKind::Free => JobKind::SearchAll(query),
-            SearchKind::Author => JobKind::SearchByAuthor(query),
-            SearchKind::Doi => JobKind::SearchByDoi(query),
+        vec![Effect::Spawn(JobKind::Search(request))]
+    }
+
+    /// Re-runs the showing search with a larger per-provider limit — doubled
+    /// (`m`), or every result (`M`). pax-core's paged search has no offset to
+    /// continue from, so this is a fresh, logged search; the current results
+    /// stay on screen until it returns.
+    fn load_more(&mut self, all: bool) -> Vec<Effect> {
+        if self.screen != Screen::Search {
+            return Vec::new();
+        }
+        let Some(loaded) = self.search.loaded() else {
+            return Vec::new();
         };
-        vec![Effect::Spawn(job)]
+        if !loaded.request.is_paged() {
+            self.status.error(
+                "A DOI lookup resolves one record per provider; there's nothing more to load",
+            );
+            return Vec::new();
+        }
+        if !loaded.has_more() {
+            self.status
+                .success("Every provider's results are already loaded");
+            return Vec::new();
+        }
+        let next = if all {
+            loaded.request.all()
+        } else {
+            loaded.request.more()
+        };
+        let Some(next) = next else {
+            self.status
+                .success("Already retrieving every result each provider serves");
+            return Vec::new();
+        };
+        if !self.start_job() {
+            return Vec::new();
+        }
+        self.status.pending(match next.options.limit {
+            Limit::Count(n) => format!("Loading up to {n} results per provider…"),
+            _ => "Loading every result each provider serves (this can be slow)…".to_string(),
+        });
+        vec![Effect::Spawn(JobKind::Search(next))]
     }
 
     /// Surfaces a search that wasn't recorded in `research/search-log.jsonl`,
@@ -651,12 +692,14 @@ impl App {
                 self.status.error(e.to_string());
             }
             JobOutcome::Searched {
+                request,
                 results,
                 index,
                 log,
             } => {
-                self.search.state = SearchState::Loaded { results, index };
-                self.search.selected = 0;
+                self.search
+                    .show_results(LoadedSearch::new(*request, results, *index));
+                self.status.clear_pending();
                 if let Some(log) = log {
                     self.report_search_log(log);
                 }
@@ -813,6 +856,7 @@ fn move_index_up(selected: &mut usize, len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query::SearchKind;
 
     #[test]
     fn loading_library_ok_populates_state() {
@@ -968,9 +1012,9 @@ mod tests {
         }
         let effects = app.apply(Action::SubmitInput);
         assert!(
-            matches!(effects.as_slice(), [Effect::Spawn(JobKind::SearchAll(q))] if q == "actor model")
+            matches!(effects.as_slice(), [Effect::Spawn(JobKind::Search(r))] if r.query == "actor model" && r.kind == SearchKind::Free)
         );
-        assert!(matches!(app.search.state, SearchState::Loading));
+        assert!(matches!(app.search.state, SearchState::Loading(_)));
         assert!(matches!(app.mode, Mode::Normal));
     }
 
@@ -984,7 +1028,7 @@ mod tests {
         }
         let effects = app.apply(Action::SubmitInput);
         assert!(
-            matches!(effects.as_slice(), [Effect::Spawn(JobKind::SearchByAuthor(q))] if q == "hewitt")
+            matches!(effects.as_slice(), [Effect::Spawn(JobKind::Search(r))] if r.query == "hewitt" && r.kind == SearchKind::Author)
         );
     }
 
@@ -1019,8 +1063,9 @@ mod tests {
         app.update(Message::Job(
             1,
             JobOutcome::Searched {
+                request: Box::new(SearchRequest::new(SearchKind::Free, "q")),
                 results,
-                index: pax_core::LibraryIndex::default(),
+                index: Box::default(),
                 log: None,
             },
         ));
@@ -1095,12 +1140,13 @@ mod tests {
         app.update(Message::Job(
             1,
             JobOutcome::Searched {
+                request: Box::new(SearchRequest::new(SearchKind::Free, "q")),
                 results: HashMap::new(),
-                index: pax_core::LibraryIndex::default(),
+                index: Box::default(),
                 log: None,
             },
         ));
-        assert!(matches!(app.search.state, SearchState::Loaded { .. }));
+        assert!(matches!(app.search.state, SearchState::Loaded(_)));
         assert_eq!(app.search.selected, 0);
     }
 
@@ -1109,8 +1155,9 @@ mod tests {
         app.update(Message::Job(
             1,
             JobOutcome::Searched {
+                request: Box::new(SearchRequest::new(SearchKind::Free, "q")),
                 results: std::collections::HashMap::new(),
-                index: pax_core::LibraryIndex::default(),
+                index: Box::default(),
                 log,
             },
         ));
@@ -1132,7 +1179,7 @@ mod tests {
             &app.status.message,
             Some((crate::status::StatusKind::Warning, msg)) if msg.contains("isn't recorded")
         ));
-        assert!(matches!(app.search.state, SearchState::Loaded { .. }));
+        assert!(matches!(app.search.state, SearchState::Loaded(_)));
     }
 
     #[test]
@@ -1142,7 +1189,7 @@ mod tests {
             &app.status.message,
             Some((crate::status::StatusKind::Error, msg)) if msg.contains("disk full")
         ));
-        assert!(matches!(app.search.state, SearchState::Loaded { .. }));
+        assert!(matches!(app.search.state, SearchState::Loaded(_)));
     }
 
     fn on_candidate_detail() -> App {

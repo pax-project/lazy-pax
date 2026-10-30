@@ -49,6 +49,15 @@ impl StatusBar {
         self.set_at = Some(Instant::now());
     }
 
+    /// Clears a `Pending` message once the job it announced has finished
+    /// without anything else to say; leaves any other message alone.
+    pub fn clear_pending(&mut self) {
+        if matches!(self.message, Some((StatusKind::Pending, _))) {
+            self.message = None;
+            self.set_at = None;
+        }
+    }
+
     pub fn pending(&mut self, msg: impl Into<String>) {
         self.message = Some((StatusKind::Pending, msg.into()));
         self.set_at = Some(Instant::now());

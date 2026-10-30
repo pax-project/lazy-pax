@@ -111,7 +111,7 @@ fn status_content(app: &App) -> (String, Style) {
 /// only decides *how much room* the wrapped paragraph gets, not how it
 /// wraps). At least 1, even for empty text, since the status line is always
 /// shown.
-fn wrapped_height(text: &str, width: u16) -> u16 {
+pub(crate) fn wrapped_height(text: &str, width: u16) -> u16 {
     if width == 0 {
         return 1;
     }

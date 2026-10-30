@@ -1,11 +1,11 @@
-use std::collections::HashMap;
-
-use pax_core::{CandidateWork, LibraryIndex, ProviderError, ProviderId, SearchPage};
+use pax_core::{CandidateWork, FilterApplication, LibraryIndex, Limit, ProviderId, SearchPage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::ui::SELECTED_ROW_STYLE;
+use crate::job::SearchResults;
+use crate::query::{SearchKind, SearchRequest};
+use crate::ui::{SELECTED_ROW_STYLE, wrapped_height};
 
 /// Fixed iteration order shared with the `pax` CLI's own `search`/`show`
 /// commands, so results render in the same provider order a `pax` user
@@ -17,38 +17,56 @@ const PROVIDER_ORDER: [ProviderId; 4] = [
     ProviderId::ArXiv,
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SearchKind {
-    Free,
-    Author,
-    Doi,
+/// A finished search: the request that produced it, each provider's page
+/// (or error), and the library index its results are checked against.
+pub struct LoadedSearch {
+    pub request: SearchRequest,
+    pub results: SearchResults,
+    pub index: LibraryIndex,
 }
 
-impl SearchKind {
-    fn label(self) -> &'static str {
-        match self {
-            SearchKind::Free => "free",
-            SearchKind::Author => "author",
-            SearchKind::Doi => "doi",
+impl LoadedSearch {
+    pub fn new(request: SearchRequest, results: SearchResults, index: LibraryIndex) -> Self {
+        LoadedSearch {
+            request,
+            results,
+            index,
         }
     }
 
-    fn next(self) -> Self {
-        match self {
-            SearchKind::Free => SearchKind::Author,
-            SearchKind::Author => SearchKind::Doi,
-            SearchKind::Doi => SearchKind::Free,
-        }
+    fn works(&self) -> Vec<CandidateWork> {
+        PROVIDER_ORDER
+            .iter()
+            .filter_map(|p| self.results.get(p).and_then(|r| r.as_ref().ok()))
+            .flat_map(|page| page.works.iter().cloned())
+            .collect()
     }
+
+    /// Whether loading more could retrieve anything: the search pages, and
+    /// some provider reported more matches than were retrieved and isn't
+    /// already at the most it serves for one query.
+    pub fn has_more(&self) -> bool {
+        self.request.is_paged()
+            && self
+                .results
+                .values()
+                .flatten()
+                .any(|page| !page.is_complete() && page.total.is_some() && !at_ceiling(page))
+    }
+}
+
+/// Whether `page` stopped at the provider's per-query ceiling (e.g.
+/// Semantic Scholar's 1,000), where asking for more can't help.
+fn at_ceiling(page: &SearchPage) -> bool {
+    page.max_retrievable
+        .is_some_and(|max| page.scanned.max(page.retrieved() as u64) >= max)
 }
 
 pub enum SearchState {
     Idle,
-    Loading,
-    Loaded {
-        results: HashMap<ProviderId, Result<SearchPage, ProviderError>>,
-        index: LibraryIndex,
-    },
+    /// A new search is in flight; nothing to show yet.
+    Loading(SearchRequest),
+    Loaded(LoadedSearch),
 }
 
 pub struct SearchScreen {
@@ -75,34 +93,52 @@ impl Default for SearchScreen {
 }
 
 impl SearchScreen {
-    fn candidates(&self) -> Option<Vec<CandidateWork>> {
+    pub fn loaded(&self) -> Option<&LoadedSearch> {
         match &self.state {
-            SearchState::Loaded { results, .. } => Some(flatten(results)),
+            SearchState::Loaded(loaded) => Some(loaded),
             _ => None,
+        }
+    }
+
+    fn row_count(&self) -> usize {
+        self.loaded().map_or(0, |loaded| loaded.works().len())
+    }
+
+    /// Shows `loaded`. A load-more of the search already showing keeps the
+    /// selection where it was; a new search starts at the top.
+    pub fn show_results(&mut self, loaded: LoadedSearch) {
+        let same_search = self.loaded().is_some_and(|previous| {
+            previous.request.kind == loaded.request.kind
+                && previous.request.query == loaded.request.query
+        });
+        self.state = SearchState::Loaded(loaded);
+        if same_search {
+            self.selected = self.selected.min(self.row_count().saturating_sub(1));
+        } else {
+            self.selected = 0;
         }
     }
 
     /// The currently-highlighted candidate and whether it's already
     /// declared in the library, for opening a detail view on it.
     pub fn selected_candidate(&self) -> Option<(CandidateWork, bool)> {
-        let (results, index) = match &self.state {
-            SearchState::Loaded { results, index } => (results, index),
-            _ => return None,
-        };
-        let work = flatten(results).get(self.selected).cloned()?;
-        let in_library = index.contains(&work);
+        let loaded = self.loaded()?;
+        let work = loaded.works().get(self.selected).cloned()?;
+        let in_library = loaded.index.contains(&work);
         Some((work, in_library))
     }
 
     pub fn move_down(&mut self) {
-        if let Some(items) = self.candidates().filter(|c| !c.is_empty()) {
-            self.selected = (self.selected + 1) % items.len();
+        let len = self.row_count();
+        if len > 0 {
+            self.selected = (self.selected + 1) % len;
         }
     }
 
     pub fn move_up(&mut self) {
-        if let Some(items) = self.candidates().filter(|c| !c.is_empty()) {
-            self.selected = (self.selected + items.len() - 1) % items.len();
+        let len = self.row_count();
+        if len > 0 {
+            self.selected = (self.selected + len - 1) % len;
         }
     }
 
@@ -111,9 +147,7 @@ impl SearchScreen {
     }
 
     pub fn go_bottom(&mut self) {
-        if let Some(items) = self.candidates().filter(|c| !c.is_empty()) {
-            self.selected = items.len() - 1;
-        }
+        self.selected = self.row_count().saturating_sub(1);
     }
 
     pub fn cycle_kind(&mut self) {
@@ -132,46 +166,116 @@ impl SearchScreen {
     }
 }
 
-fn flatten(results: &HashMap<ProviderId, Result<SearchPage, ProviderError>>) -> Vec<CandidateWork> {
-    PROVIDER_ORDER
-        .iter()
-        .filter_map(|p| results.get(p).and_then(|r| r.as_ref().ok()))
-        .flat_map(|page| page.works.iter().cloned())
+/// One provider's outcome, mirroring what `pax search` prints for it: the
+/// count line (`retrieved N of M`), then any notes — more available, a
+/// per-query ceiling, filters applied post-retrieval or not at all.
+fn provider_lines<E: ToString>(
+    provider: ProviderId,
+    result: &Result<SearchPage, E>,
+) -> Vec<String> {
+    let page = match result {
+        Ok(page) => page,
+        Err(e) => return vec![format!("{provider}: failed — {}", e.to_string())],
+    };
+    let retrieved = page.retrieved();
+    let Some(total) = page.total else {
+        return vec![format!(
+            "{provider}: retrieved {retrieved} (total not reported)"
+        )];
+    };
+    let scanned = page.scanned;
+    let mut count = format!("{provider}: retrieved {retrieved} of {total}");
+    let mut notes = Vec::new();
+    if page.is_complete() {
+        let skipped = scanned.saturating_sub(retrieved as u64);
+        if skipped > 0 && !page.has_post_retrieval_filter() {
+            notes.push(format!(
+                "{skipped} entries without a {provider} record skipped"
+            ));
+        }
+    } else if let Some(max) = page.max_retrievable.filter(|_| at_ceiling(page)) {
+        count.push_str(&format!(" — {provider} serves at most {max} per query"));
+    } else {
+        count.push_str(" — more available");
+    }
+    for filter in &page.filters {
+        match filter.application {
+            FilterApplication::PostRetrieval => notes.push(format!(
+                "{} filter applied post-retrieval to the {scanned} records fetched; the total counts records before it",
+                filter.kind
+            )),
+            FilterApplication::NotApplied => notes.push(format!(
+                "{} filter not applied: {provider} has no such data, so these results ignore it",
+                filter.kind
+            )),
+            _ => {}
+        }
+    }
+    let unknown = page.language_unknown.len();
+    if unknown > 0 {
+        notes.push(format!(
+            "{unknown} records have no language, so the language filter couldn't check them; kept and marked [language unknown]"
+        ));
+    }
+    std::iter::once(count)
+        .chain(
+            notes
+                .into_iter()
+                .map(|note| format!("  {provider}: {note}")),
+        )
         .collect()
 }
 
-fn provider_errors(
-    results: &HashMap<ProviderId, Result<SearchPage, ProviderError>>,
-) -> Vec<(ProviderId, String)> {
+fn summary_lines(loaded: &LoadedSearch) -> Vec<String> {
     PROVIDER_ORDER
         .iter()
-        .filter_map(|p| {
-            results
-                .get(p)
-                .and_then(|r| r.as_ref().err().map(|e| (*p, e.to_string())))
-        })
+        .filter_map(|p| loaded.results.get(p).map(|r| provider_lines(*p, r)))
+        .flatten()
         .collect()
+}
+
+fn loading_message(request: &SearchRequest) -> String {
+    if !request.is_paged() {
+        return "Looking up…".to_string();
+    }
+    match request.options.limit {
+        Limit::Count(n) => format!("Searching (up to {n} results per provider)…"),
+        _ => "Searching (every result each provider serves; this can be slow)…".to_string(),
+    }
 }
 
 pub fn draw(frame: &mut Frame, screen: &SearchScreen, editing: bool, area: Rect) {
     let header = header_text(screen, editing);
-    let header_height = header.lines().count() as u16;
+    let header_height = wrapped_height(&header, area.width).min(area.height / 2);
     let [header_area, list_area] =
         Layout::vertical([Constraint::Length(header_height), Constraint::Min(0)]).areas(area);
 
-    frame.render_widget(Paragraph::new(header), header_area);
+    frame.render_widget(
+        Paragraph::new(header).wrap(Wrap { trim: false }),
+        header_area,
+    );
 
     match &screen.state {
         SearchState::Idle => {
             render_message(frame, list_area, "Type a query and press Enter to search.")
         }
-        SearchState::Loading => render_message(frame, list_area, "Searching…"),
-        SearchState::Loaded { results, index } => {
-            let items = flatten(results);
+        SearchState::Loading(request) => {
+            render_message(frame, list_area, &loading_message(request))
+        }
+        SearchState::Loaded(loaded) => {
+            let items = loaded.works();
             if items.is_empty() {
                 render_message(frame, list_area, "No results.");
             } else {
-                render_list(frame, &items, index, screen.selected, list_area);
+                let title = list_title(loaded, items.len());
+                render_list(
+                    frame,
+                    &title,
+                    &items,
+                    &loaded.index,
+                    screen.selected,
+                    list_area,
+                );
             }
         }
     }
@@ -184,17 +288,14 @@ fn header_text(screen: &SearchScreen, editing: bool) -> String {
         &screen.query
     };
     let cursor = if editing { "▏" } else { "" };
-    let mut header = format!(
+    let mut lines = vec![format!(
         "Search [{}] (Tab: cycle mode, Enter: search, /: edit, Esc: back): {text}{cursor}",
         screen.kind.label()
-    );
-    if let SearchState::Loaded { results, .. } = &screen.state {
-        for (provider, message) in provider_errors(results) {
-            header.push('\n');
-            header.push_str(&format!("{provider}: failed — {message}"));
-        }
+    )];
+    if let Some(loaded) = screen.loaded() {
+        lines.extend(summary_lines(loaded));
     }
-    header
+    lines.join("\n")
 }
 
 fn render_message(frame: &mut Frame, area: Rect, message: &str) {
@@ -204,8 +305,20 @@ fn render_message(frame: &mut Frame, area: Rect, message: &str) {
     frame.render_widget(Paragraph::new(message).block(block), area);
 }
 
+fn list_title(loaded: &LoadedSearch, rows: usize) -> String {
+    if loaded.request.is_paged() {
+        format!(
+            " lazypax — search · {rows} results · limit {} per provider ",
+            loaded.request.limit_label()
+        )
+    } else {
+        format!(" lazypax — search · {rows} results ")
+    }
+}
+
 fn render_list(
     frame: &mut Frame,
+    title: &str,
     items: &[CandidateWork],
     index: &LibraryIndex,
     selected: usize,
@@ -216,11 +329,7 @@ fn render_list(
         .map(|work| ListItem::new(format_candidate(work, index)))
         .collect();
     let list = List::new(list_items)
-        .block(
-            Block::default()
-                .title(" lazypax — search ")
-                .borders(Borders::ALL),
-        )
+        .block(Block::default().title(title).borders(Borders::ALL))
         .highlight_style(SELECTED_ROW_STYLE);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
@@ -247,11 +356,13 @@ fn format_candidate(work: &CandidateWork, index: &LibraryIndex) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use pax_core::CandidateId;
+    use pax_core::{AppliedFilter, CandidateId, FilterKind, ProviderError};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
-    fn work(provider: ProviderId, native_id: &str, title: &str) -> CandidateWork {
+    pub(crate) fn work(provider: ProviderId, native_id: &str, title: &str) -> CandidateWork {
         CandidateWork {
             id: CandidateId {
                 provider,
@@ -267,59 +378,158 @@ mod tests {
         }
     }
 
-    fn page(works: Vec<CandidateWork>) -> SearchPage {
-        SearchPage::new(works, None, None)
+    pub(crate) fn page(works: Vec<CandidateWork>, total: u64) -> SearchPage {
+        SearchPage::new(works, Some(total), None)
     }
 
-    fn loaded(results: HashMap<ProviderId, Result<SearchPage, ProviderError>>) -> SearchScreen {
+    fn loaded(results: SearchResults) -> SearchScreen {
         SearchScreen {
-            state: SearchState::Loaded {
+            state: SearchState::Loaded(LoadedSearch::new(
+                SearchRequest::new(SearchKind::Free, "q"),
                 results,
-                index: LibraryIndex::default(),
-            },
+                LibraryIndex::default(),
+            )),
             ..Default::default()
         }
     }
 
+    pub(crate) fn render(screen: &SearchScreen) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, screen, false, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
-    fn flatten_preserves_provider_order_and_skips_errors() {
-        let mut results: HashMap<ProviderId, Result<SearchPage, ProviderError>> = HashMap::new();
+    fn works_preserve_provider_order_and_skip_errors() {
+        let mut results = SearchResults::new();
         results.insert(
             ProviderId::Crossref,
-            Ok(page(vec![work(ProviderId::Crossref, "1", "B")])),
+            Ok(page(vec![work(ProviderId::Crossref, "1", "B")], 1)),
         );
         results.insert(
             ProviderId::OpenAlex,
-            Ok(page(vec![work(ProviderId::OpenAlex, "2", "A")])),
+            Ok(page(vec![work(ProviderId::OpenAlex, "2", "A")], 1)),
         );
         results.insert(ProviderId::SemanticScholar, Err(ProviderError::NotFound));
 
-        let flat = flatten(&results);
-        assert_eq!(flat.len(), 2);
-        assert_eq!(flat[0].title, "A"); // OpenAlex before Crossref, per PROVIDER_ORDER
-        assert_eq!(flat[1].title, "B");
+        let screen = loaded(results);
+        let works = screen.loaded().unwrap().works();
+        assert_eq!(works.len(), 2);
+        assert_eq!(works[0].title, "A"); // OpenAlex before Crossref, per PROVIDER_ORDER
+        assert_eq!(works[1].title, "B");
     }
 
     #[test]
-    fn provider_errors_lists_only_failing_providers() {
-        let mut results: HashMap<ProviderId, Result<SearchPage, ProviderError>> = HashMap::new();
-        results.insert(ProviderId::OpenAlex, Ok(page(vec![])));
-        results.insert(ProviderId::Crossref, Err(ProviderError::NotFound));
-
-        let errors = provider_errors(&results);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].0, ProviderId::Crossref);
+    fn a_complete_page_shows_retrieved_of_total() {
+        let lines = provider_lines::<ProviderError>(
+            ProviderId::ArXiv,
+            &Ok(page(vec![work(ProviderId::ArXiv, "1", "A")], 1)),
+        );
+        assert_eq!(lines, vec!["arxiv: retrieved 1 of 1"]);
     }
 
     #[test]
-    fn movement_wraps_across_flattened_results() {
-        let mut results: HashMap<ProviderId, Result<SearchPage, ProviderError>> = HashMap::new();
+    fn a_partial_page_says_more_is_available() {
+        let lines = provider_lines::<ProviderError>(
+            ProviderId::OpenAlex,
+            &Ok(page(vec![work(ProviderId::OpenAlex, "1", "A")], 900)),
+        );
+        assert_eq!(lines, vec!["openalex: retrieved 1 of 900 — more available"]);
+    }
+
+    #[test]
+    fn a_page_at_the_providers_ceiling_says_so_instead() {
+        let works = (0..3)
+            .map(|n| work(ProviderId::SemanticScholar, &n.to_string(), "T"))
+            .collect();
+        let capped = SearchPage::new(works, Some(5000), Some(3));
+        let lines = provider_lines::<ProviderError>(ProviderId::SemanticScholar, &Ok(capped));
+        assert_eq!(
+            lines,
+            vec![
+                "semanticscholar: retrieved 3 of 5000 — semanticscholar serves at most 3 per query"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unreported_total_says_so() {
+        let lines = provider_lines::<ProviderError>(
+            ProviderId::Crossref,
+            &Ok(SearchPage::new(Vec::new(), None, None)),
+        );
+        assert_eq!(lines, vec!["crossref: retrieved 0 (total not reported)"]);
+    }
+
+    #[test]
+    fn a_failed_provider_shows_its_error() {
+        let lines = provider_lines(ProviderId::Crossref, &Err(ProviderError::NotFound));
+        assert_eq!(lines, vec!["crossref: failed — not found"]);
+    }
+
+    #[test]
+    fn filter_notes_follow_the_count_line() {
+        let page = page(Vec::new(), 10).with_scanned(10).with_filters(vec![
+            AppliedFilter::new(FilterKind::Year, FilterApplication::Server),
+            AppliedFilter::new(FilterKind::Language, FilterApplication::PostRetrieval),
+            AppliedFilter::new(FilterKind::DocType, FilterApplication::NotApplied),
+        ]);
+        let lines = provider_lines::<ProviderError>(ProviderId::Crossref, &Ok(page));
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].contains("language filter applied post-retrieval to the 10 records"));
+        assert!(lines[2].contains("type filter not applied: crossref has no such data"));
+    }
+
+    #[test]
+    fn has_more_only_while_some_provider_can_serve_more() {
+        let mut results = SearchResults::new();
+        results.insert(ProviderId::OpenAlex, Ok(page(Vec::new(), 0)));
+        assert!(!loaded(results.clone()).loaded().unwrap().has_more());
+
+        results.insert(
+            ProviderId::Crossref,
+            Ok(page(vec![work(ProviderId::Crossref, "1", "A")], 50)),
+        );
+        assert!(loaded(results).loaded().unwrap().has_more());
+    }
+
+    #[test]
+    fn a_doi_lookup_never_has_more() {
+        let mut results = SearchResults::new();
+        results.insert(
+            ProviderId::Crossref,
+            Ok(page(vec![work(ProviderId::Crossref, "1", "A")], 50)),
+        );
+        let doi = LoadedSearch::new(
+            SearchRequest::new(SearchKind::Doi, "10.1/x"),
+            results,
+            LibraryIndex::default(),
+        );
+        assert!(!doi.has_more());
+    }
+
+    #[test]
+    fn movement_wraps_across_results() {
+        let mut results = SearchResults::new();
         results.insert(
             ProviderId::OpenAlex,
-            Ok(page(vec![
-                work(ProviderId::OpenAlex, "1", "A"),
-                work(ProviderId::OpenAlex, "2", "B"),
-            ])),
+            Ok(page(
+                vec![
+                    work(ProviderId::OpenAlex, "1", "A"),
+                    work(ProviderId::OpenAlex, "2", "B"),
+                ],
+                2,
+            )),
         );
         let mut screen = loaded(results);
         screen.selected = 1;
@@ -330,23 +540,39 @@ mod tests {
     }
 
     #[test]
-    fn cycle_kind_rotates_free_author_doi() {
-        let mut screen = SearchScreen::default();
-        assert!(matches!(screen.kind, SearchKind::Free));
-        screen.cycle_kind();
-        assert!(matches!(screen.kind, SearchKind::Author));
-        screen.cycle_kind();
-        assert!(matches!(screen.kind, SearchKind::Doi));
-        screen.cycle_kind();
-        assert!(matches!(screen.kind, SearchKind::Free));
+    fn loading_more_of_the_same_search_keeps_the_selection() {
+        let results_of = |n: usize| {
+            let mut results = SearchResults::new();
+            let works = (0..n)
+                .map(|i| work(ProviderId::OpenAlex, &i.to_string(), "T"))
+                .collect();
+            results.insert(ProviderId::OpenAlex, Ok(page(works, 10)));
+            results
+        };
+        let mut screen = loaded(results_of(2));
+        screen.selected = 1;
+        let request = SearchRequest::new(SearchKind::Free, "q").more().unwrap();
+        screen.show_results(LoadedSearch::new(
+            request,
+            results_of(4),
+            LibraryIndex::default(),
+        ));
+        assert_eq!(screen.selected, 1);
+
+        screen.show_results(LoadedSearch::new(
+            SearchRequest::new(SearchKind::Free, "other"),
+            results_of(4),
+            LibraryIndex::default(),
+        ));
+        assert_eq!(screen.selected, 0);
     }
 
     #[test]
     fn selected_candidate_reports_in_library_by_identity() {
         let mut w = work(ProviderId::OpenAlex, "1", "A");
         w.doi = Some("https://doi.org/10.1145/foo".to_string());
-        let mut results: HashMap<ProviderId, Result<SearchPage, ProviderError>> = HashMap::new();
-        results.insert(ProviderId::OpenAlex, Ok(page(vec![w])));
+        let mut results = SearchResults::new();
+        results.insert(ProviderId::OpenAlex, Ok(page(vec![w], 1)));
         let paper = pax_core::Paper {
             identity: pax_core::Identity {
                 doi: Some("10.1145/foo".to_string()),
@@ -364,7 +590,11 @@ mod tests {
             &pax_core::Exclusions::default(),
         );
         let screen = SearchScreen {
-            state: SearchState::Loaded { results, index },
+            state: SearchState::Loaded(LoadedSearch::new(
+                SearchRequest::new(SearchKind::Free, "q"),
+                results,
+                index,
+            )),
             ..Default::default()
         };
         let (candidate, in_library) = screen.selected_candidate().unwrap();
@@ -386,5 +616,34 @@ mod tests {
         let committed = screen.submit_query_edit();
         assert_eq!(committed, "actor model");
         assert_eq!(screen.query, "actor model");
+    }
+
+    #[test]
+    fn the_rendered_header_shows_each_providers_totals() {
+        let mut results = SearchResults::new();
+        results.insert(
+            ProviderId::OpenAlex,
+            Ok(page(vec![work(ProviderId::OpenAlex, "1", "Actors")], 120)),
+        );
+        results.insert(
+            ProviderId::Crossref,
+            Err(ProviderError::Request("429 Too Many Requests".to_string())),
+        );
+        let text = render(&loaded(results));
+        assert!(text.contains("openalex: retrieved 1 of 120 — more available"));
+        assert!(text.contains("crossref: failed — request failed: 429 Too Many Requests"));
+        assert!(text.contains("Actors"));
+        assert!(text.contains("1 results · limit 50 per provider"));
+    }
+
+    #[test]
+    fn loading_shows_the_limit_being_retrieved() {
+        let more = SearchRequest::new(SearchKind::Free, "q").more().unwrap();
+        assert_eq!(
+            loading_message(&more),
+            "Searching (up to 100 results per provider)…"
+        );
+        let all = more.all().unwrap();
+        assert!(loading_message(&all).contains("every result each provider serves"));
     }
 }
