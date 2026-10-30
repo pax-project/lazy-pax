@@ -37,6 +37,7 @@ lazy-pax
 | `m` / `M` | Load more search results (double each provider's limit) / load all of them |
 | `Enter` / `l` | Open detail view |
 | `a` | Add the selected search result / add a tag (in Edit) |
+| `x` | Exclude the selected search result, with a reason and stage (see below) / remove the last tag (in Edit) |
 | `f` | Fetch (materialize) the selected paper |
 | `o` | Open the selected paper in `$PAX_PDF_VIEWER` |
 | `e` | Edit tags, notes, or identity fields |
@@ -58,6 +59,7 @@ Search shows the same information `pax search` prints:
 - **Flags:** `[in library]` and `[excluded]` (from `research/excluded.nix`) match a paper by any of its versions; `[language unknown]` marks a record the language filter couldn't check.
 - **Filters:** `F` takes year, document type and language in the syntax of `pax search --year/--type/--lang`, and re-runs the current search.
 - **Load more:** pax-core's search has no offset, so `m` re-runs the search with each provider's limit doubled, and `M` asks for every result (slow for large result sets).
+- **Exclude:** `x` on a row (or on a search result's detail view) asks for the reason, which is required, and shows the stage next to it: `screening` by default, `Tab` switches to `full-text`. `Enter` records the exclusion in `research/excluded.nix` through pax-core, as `pax exclude` does, and the row's flag switches to `[excluded]`. pax-core refuses to exclude a paper that's in the library; the refusal shows on the status line.
 - **Search log:** every free-text and author search is recorded in `research/search-log.jsonl`, the same log the CLI writes, so `pax stats` counts it. A DOI lookup isn't logged, as in the CLI.
 
 ### PRISMA stats
