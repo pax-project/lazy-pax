@@ -1,7 +1,7 @@
 use std::io::ErrorKind;
 
 use crossterm::event::{Event, KeyEventKind};
-use pax_core::{FetchOutcome, PaxError};
+use pax_core::{FetchOutcome, LogOutcome, PaxError};
 
 use crate::action::Action;
 use crate::job::{JobKind, JobOutcome};
@@ -622,6 +622,21 @@ impl App {
         vec![Effect::Spawn(job)]
     }
 
+    /// Surfaces a search that wasn't recorded in `research/search-log.jsonl`,
+    /// the way `pax search` warns about it on stderr. Never fatal: the
+    /// results are good either way.
+    fn report_search_log(&mut self, log: LogOutcome) {
+        match log {
+            LogOutcome::NoLibrary => self
+                .status
+                .warning("Not in a pax library, so this search isn't recorded in a search log"),
+            LogOutcome::Failed(e) => self.status.error(format!(
+                "Couldn't write research/search-log.jsonl: {e} (the results are still good)"
+            )),
+            _ => {}
+        }
+    }
+
     fn apply_job_outcome(&mut self, outcome: JobOutcome) -> Vec<Effect> {
         self.job_running = false;
         match outcome {
@@ -635,9 +650,16 @@ impl App {
             JobOutcome::Library(Err(e)) => {
                 self.status.error(e.to_string());
             }
-            JobOutcome::Searched { results, index } => {
+            JobOutcome::Searched {
+                results,
+                index,
+                log,
+            } => {
                 self.search.state = SearchState::Loaded { results, index };
                 self.search.selected = 0;
+                if let Some(log) = log {
+                    self.report_search_log(log);
+                }
             }
             JobOutcome::Added(Ok(paper_ref)) => {
                 self.status
@@ -986,12 +1008,20 @@ mod tests {
         use std::collections::HashMap;
         let mut app = App::new();
         let mut results = HashMap::new();
-        results.insert(pax_core::ProviderId::OpenAlex, Ok(vec![candidate_work()]));
+        results.insert(
+            pax_core::ProviderId::OpenAlex,
+            Ok(pax_core::SearchPage::new(
+                vec![candidate_work()],
+                None,
+                None,
+            )),
+        );
         app.update(Message::Job(
             1,
             JobOutcome::Searched {
                 results,
                 index: pax_core::LibraryIndex::default(),
+                log: None,
             },
         ));
         app
@@ -1067,10 +1097,52 @@ mod tests {
             JobOutcome::Searched {
                 results: HashMap::new(),
                 index: pax_core::LibraryIndex::default(),
+                log: None,
             },
         ));
         assert!(matches!(app.search.state, SearchState::Loaded { .. }));
         assert_eq!(app.search.selected, 0);
+    }
+
+    fn searched_with_log(log: Option<LogOutcome>) -> App {
+        let mut app = App::new();
+        app.update(Message::Job(
+            1,
+            JobOutcome::Searched {
+                results: std::collections::HashMap::new(),
+                index: pax_core::LibraryIndex::default(),
+                log,
+            },
+        ));
+        app
+    }
+
+    #[test]
+    fn a_logged_search_shows_no_status_message() {
+        let app = searched_with_log(Some(LogOutcome::Written(
+            "research/search-log.jsonl".into(),
+        )));
+        assert!(app.status.message.is_none());
+    }
+
+    #[test]
+    fn a_search_outside_a_library_warns_that_it_was_not_logged() {
+        let app = searched_with_log(Some(LogOutcome::NoLibrary));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Warning, msg)) if msg.contains("isn't recorded")
+        ));
+        assert!(matches!(app.search.state, SearchState::Loaded { .. }));
+    }
+
+    #[test]
+    fn a_failed_log_write_is_an_error_but_keeps_the_results() {
+        let app = searched_with_log(Some(LogOutcome::Failed(std::io::Error::other("disk full"))));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg)) if msg.contains("disk full")
+        ));
+        assert!(matches!(app.search.state, SearchState::Loaded { .. }));
     }
 
     fn on_candidate_detail() -> App {

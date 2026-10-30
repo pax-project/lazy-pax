@@ -96,6 +96,7 @@ fn status_content(app: &App) -> (String, Style) {
         let color = match kind {
             StatusKind::Error => Color::Red,
             StatusKind::Success => Color::Green,
+            StatusKind::Warning => Color::LightYellow,
             StatusKind::Pending => Color::Yellow,
         };
         (msg.clone(), Style::default().fg(color))

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use pax_core::{CandidateWork, LibraryIndex, ProviderError, ProviderId};
+use pax_core::{CandidateWork, LibraryIndex, ProviderError, ProviderId, SearchPage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -46,7 +46,7 @@ pub enum SearchState {
     Idle,
     Loading,
     Loaded {
-        results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>,
+        results: HashMap<ProviderId, Result<SearchPage, ProviderError>>,
         index: LibraryIndex,
     },
 }
@@ -132,18 +132,16 @@ impl SearchScreen {
     }
 }
 
-fn flatten(
-    results: &HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>,
-) -> Vec<CandidateWork> {
+fn flatten(results: &HashMap<ProviderId, Result<SearchPage, ProviderError>>) -> Vec<CandidateWork> {
     PROVIDER_ORDER
         .iter()
         .filter_map(|p| results.get(p).and_then(|r| r.as_ref().ok()))
-        .flat_map(|works| works.iter().cloned())
+        .flat_map(|page| page.works.iter().cloned())
         .collect()
 }
 
 fn provider_errors(
-    results: &HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>,
+    results: &HashMap<ProviderId, Result<SearchPage, ProviderError>>,
 ) -> Vec<(ProviderId, String)> {
     PROVIDER_ORDER
         .iter()
@@ -269,9 +267,11 @@ mod tests {
         }
     }
 
-    fn loaded(
-        results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>,
-    ) -> SearchScreen {
+    fn page(works: Vec<CandidateWork>) -> SearchPage {
+        SearchPage::new(works, None, None)
+    }
+
+    fn loaded(results: HashMap<ProviderId, Result<SearchPage, ProviderError>>) -> SearchScreen {
         SearchScreen {
             state: SearchState::Loaded {
                 results,
@@ -283,15 +283,14 @@ mod tests {
 
     #[test]
     fn flatten_preserves_provider_order_and_skips_errors() {
-        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> =
-            HashMap::new();
+        let mut results: HashMap<ProviderId, Result<SearchPage, ProviderError>> = HashMap::new();
         results.insert(
             ProviderId::Crossref,
-            Ok(vec![work(ProviderId::Crossref, "1", "B")]),
+            Ok(page(vec![work(ProviderId::Crossref, "1", "B")])),
         );
         results.insert(
             ProviderId::OpenAlex,
-            Ok(vec![work(ProviderId::OpenAlex, "2", "A")]),
+            Ok(page(vec![work(ProviderId::OpenAlex, "2", "A")])),
         );
         results.insert(ProviderId::SemanticScholar, Err(ProviderError::NotFound));
 
@@ -303,9 +302,8 @@ mod tests {
 
     #[test]
     fn provider_errors_lists_only_failing_providers() {
-        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> =
-            HashMap::new();
-        results.insert(ProviderId::OpenAlex, Ok(vec![]));
+        let mut results: HashMap<ProviderId, Result<SearchPage, ProviderError>> = HashMap::new();
+        results.insert(ProviderId::OpenAlex, Ok(page(vec![])));
         results.insert(ProviderId::Crossref, Err(ProviderError::NotFound));
 
         let errors = provider_errors(&results);
@@ -315,14 +313,13 @@ mod tests {
 
     #[test]
     fn movement_wraps_across_flattened_results() {
-        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> =
-            HashMap::new();
+        let mut results: HashMap<ProviderId, Result<SearchPage, ProviderError>> = HashMap::new();
         results.insert(
             ProviderId::OpenAlex,
-            Ok(vec![
+            Ok(page(vec![
                 work(ProviderId::OpenAlex, "1", "A"),
                 work(ProviderId::OpenAlex, "2", "B"),
-            ]),
+            ])),
         );
         let mut screen = loaded(results);
         screen.selected = 1;
@@ -348,9 +345,8 @@ mod tests {
     fn selected_candidate_reports_in_library_by_identity() {
         let mut w = work(ProviderId::OpenAlex, "1", "A");
         w.doi = Some("https://doi.org/10.1145/foo".to_string());
-        let mut results: HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>> =
-            HashMap::new();
-        results.insert(ProviderId::OpenAlex, Ok(vec![w]));
+        let mut results: HashMap<ProviderId, Result<SearchPage, ProviderError>> = HashMap::new();
+        results.insert(ProviderId::OpenAlex, Ok(page(vec![w])));
         let paper = pax_core::Paper {
             identity: pax_core::Identity {
                 doi: Some("10.1145/foo".to_string()),

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use pax_core::{
-    CandidateId, CandidateWork, CheckReport, FetchOutcome, PaperEdits, PaperRef, PaxError,
-    ProviderError, ProviderId, ResolvedArtifact, SyncReport,
+    CandidateId, CheckReport, FetchOutcome, LogOutcome, PaperEdits, PaperRef, PaxError,
+    ProviderError, ProviderId, ResolvedArtifact, SearchOptions, SearchPage, SyncReport,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -12,7 +12,7 @@ use crate::pax_ctx::PaxCtx;
 
 pub type JobId = u64;
 
-type SearchResults = HashMap<ProviderId, Result<Vec<CandidateWork>, ProviderError>>;
+pub type SearchResults = HashMap<ProviderId, Result<SearchPage, ProviderError>>;
 
 /// The only module allowed to call into `pax_core` directly — every other
 /// module works with `pax_core` *types* (`Paper`, `PaxError`, ...) but never
@@ -49,6 +49,9 @@ pub enum JobOutcome {
     Searched {
         results: SearchResults,
         index: pax_core::LibraryIndex,
+        /// Whether the search was recorded in `research/search-log.jsonl`;
+        /// `None` for a DOI lookup, which isn't logged.
+        log: Option<LogOutcome>,
     },
     Added(Result<PaperRef, PaxError>),
     Fetched {
@@ -256,39 +259,45 @@ pub fn spawn(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>
         | JobKind::SearchByAuthor(_)
         | JobKind::SearchByDoi(_)
         | JobKind::AddCandidate(_)) => {
-            spawn_network(id, network_kind, ctx, tx);
+            tokio::spawn(async move {
+                let outcome = run_network_job(network_kind, ctx).await;
+                let _ = tx.send(Message::Job(id, outcome));
+            });
         }
     }
 }
 
-/// `pax_core`'s async functions that touch providers aren't `Send` — the
-/// `crossref` crate's HTTP client holds an `Rc` internally — so their
-/// futures can't run on `tokio::spawn`'s multi-threaded executor. Each such
-/// job gets its own OS thread with a small current-thread runtime instead:
-/// still fully off the main event loop's task, just not sharing its
-/// runtime. Applies to search and `add_candidate` today; `show_reference`
-/// needs the same treatment if a future step calls it.
-fn spawn_network(id: JobId, kind: JobKind, ctx: PaxCtx, tx: UnboundedSender<Message>) {
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to build network runtime");
-        let outcome = runtime.block_on(run_network_job(kind, ctx));
-        let _ = tx.send(Message::Job(id, outcome));
-    });
-}
-
+/// Provider calls run as ordinary tasks on the main runtime's worker
+/// threads: pax-core 2.0's search and `add_candidate` futures are `Send`,
+/// so they never run on (or block) the event loop's own task.
 async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
     match kind {
         JobKind::SearchAll(query) => {
-            searched(pax_core::search_all(&query, &ctx.config).await, &ctx)
+            let options = SearchOptions::default();
+            let logged =
+                pax_core::search_all_logged(&query, &options, &ctx.root, &ctx.config).await;
+            searched(logged.results, Some(logged.log), &ctx)
         }
         JobKind::SearchByAuthor(author) => {
-            searched(pax_core::search_by_author(&author, &ctx.config).await, &ctx)
+            let options = SearchOptions::default();
+            let logged =
+                pax_core::search_by_author_logged(&author, &options, &ctx.root, &ctx.config).await;
+            searched(logged.results, Some(logged.log), &ctx)
         }
         JobKind::SearchByDoi(doi) => {
-            searched(pax_core::search_by_doi(&doi, &ctx.config).await, &ctx)
+            // A DOI lookup resolves one record per provider rather than
+            // paging a result set, and the `pax` CLI doesn't log it either.
+            let results = pax_core::search_by_doi(&doi, &ctx.config)
+                .await
+                .into_iter()
+                .map(|(provider, result)| {
+                    (
+                        provider,
+                        result.map(|works| SearchPage::new(works, None, None)),
+                    )
+                })
+                .collect();
+            searched(results, None, &ctx)
         }
         JobKind::AddCandidate(candidate_id) => {
             let result = pax_core::add_candidate(&candidate_id, &ctx.root, &ctx.config).await;
@@ -304,14 +313,18 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
         | JobKind::ExportToFile { .. }
         | JobKind::Init
         | JobKind::UploadPdf { .. } => {
-            unreachable!("spawn_network is only called with network JobKinds")
+            unreachable!("run_network_job is only called with network JobKinds")
         }
     }
 }
 
-fn searched(results: SearchResults, ctx: &PaxCtx) -> JobOutcome {
+fn searched(results: SearchResults, log: Option<LogOutcome>, ctx: &PaxCtx) -> JobOutcome {
     let index = pax_core::LibraryIndex::load(&ctx.root);
-    JobOutcome::Searched { results, index }
+    JobOutcome::Searched {
+        results,
+        index,
+        log,
+    }
 }
 
 fn load_library(root: &Path) -> Result<Vec<pax_core::Paper>, PaxError> {
