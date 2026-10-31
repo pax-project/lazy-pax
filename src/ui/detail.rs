@@ -3,6 +3,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
+#[derive(Clone)]
 pub enum DetailSubject {
     Candidate {
         work: CandidateWork,

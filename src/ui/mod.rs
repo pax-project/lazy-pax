@@ -178,13 +178,13 @@ fn hint_text(app: &App) -> String {
         },
         Screen::Detail => match &app.detail.subject {
             Some(DetailSubject::Candidate { in_library: true, .. }) => {
-                "a: add anyway (already in library)  Esc: back  q: quit".to_string()
+                "a: add anyway (already in library)  r: references  R: cited by  Esc: back  q: quit".to_string()
             }
             Some(DetailSubject::Candidate { in_library: false, .. }) => {
-                "a: add  x: exclude  Esc: back  q: quit".to_string()
+                "a: add  x: exclude  r: references  R: cited by  Esc: back  q: quit".to_string()
             }
             Some(DetailSubject::Declared(_)) => {
-                "f: fetch  o: open  e: edit  d: remove  Esc: back  q: quit".to_string()
+                "f: fetch  o: open  e: edit  d: remove  r: references  R: cited by  Esc: back  q: quit".to_string()
             }
             None => "Esc: back  q: quit".to_string(),
         },

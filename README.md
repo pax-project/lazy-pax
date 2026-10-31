@@ -38,6 +38,7 @@ lazy-pax
 | `Enter` / `l` | Open detail view |
 | `a` | Add the selected search result / add a tag (in Edit) |
 | `x` | Exclude the selected search result, with a reason and stage (see below) / remove the last tag (in Edit) |
+| `r` / `R` | List the detail view's paper's references / the papers citing it (see Snowballing) |
 | `f` | Fetch (materialize) the selected paper |
 | `o` | Open the selected paper in `$PAX_PDF_VIEWER` |
 | `e` | Edit tags, notes, or identity fields |
@@ -61,6 +62,12 @@ Search shows the same information `pax search` prints:
 - **Load more:** pax-core's search has no offset, so `m` re-runs the search with each provider's limit doubled, and `M` asks for every result (slow for large result sets).
 - **Exclude:** `x` on a row (or on a search result's detail view) asks for the reason, which is required, and shows the stage next to it: `screening` by default, `Tab` switches to `full-text`. `Enter` records the exclusion in `research/excluded.nix` through pax-core, as `pax exclude` does, and the row's flag switches to `[excluded]`. pax-core refuses to exclude a paper that's in the library; the refusal shows on the status line.
 - **Search log:** every free-text and author search is recorded in `research/search-log.jsonl`, the same log the CLI writes, so `pax stats` counts it. A DOI lookup isn't logged, as in the CLI.
+
+### Snowballing
+
+On a paper's detail view, `r` lists its references (backward snowballing) and `R` the papers citing it (forward), the same lists `pax refs` and `pax cited-by` print. A declared paper is looked up by its citation key, a search result by its `provider:id`. Only OpenAlex and Semantic Scholar have citation data; a provider that doesn't know the paper says so in the header while the other still lists its results.
+
+The list opens on the search screen, headed `Showing references of "<title>" (<seed>)`, with everything search has: per-provider totals, merged rows, the `[in library]` / `[excluded]` flags, filters (`F` re-runs the list), and load more (`m` / `M`). `Enter` opens a result and `a` adds it, so a round can be screened without leaving lazypax; `r` / `R` on a result snowballs another step. `Esc` returns to the detail view the list was opened from, and from there to whatever search was showing before. Typing a query (`/`) replaces the list with an ordinary search. Every list is recorded in `research/search-log.jsonl`, as the CLI records it. A seed pax-core can't resolve at all (e.g. a citation key no longer in the library) is an error on the status line, and the detail view stays as it was.
 
 ### PRISMA stats
 

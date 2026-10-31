@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::InsertTarget;
-use crate::job::SearchResults;
+use crate::job::{ProviderFailure, SearchResults};
 use crate::query::{SearchKind, SearchRequest, format_filters, parse_filters};
 use crate::ui::{SELECTED_ROW_STYLE, wrapped_height};
 
@@ -147,11 +147,41 @@ impl SearchScreen {
         SearchRequest::new(self.kind, query).with_filters(self.filters.clone())
     }
 
+    /// The search to re-run when the filters change: the citation list
+    /// showing, if it is one, else the committed query. Either starts again
+    /// at the default limit, as a new search does.
+    pub fn refiltered_request(&self) -> SearchRequest {
+        match self.current_request() {
+            Some(current) if current.kind.is_citations() => SearchRequest {
+                options: Default::default(),
+                ..current.clone()
+            }
+            .with_filters(self.filters.clone()),
+            _ => self.request(self.query.clone()),
+        }
+    }
+
     pub fn loaded(&self) -> Option<&LoadedSearch> {
         match &self.state {
             SearchState::Loaded(loaded) => Some(loaded),
             _ => None,
         }
+    }
+
+    /// The search showing or loading, if any.
+    pub fn current_request(&self) -> Option<&SearchRequest> {
+        match &self.state {
+            SearchState::Idle => None,
+            SearchState::Loading(request) => Some(request),
+            SearchState::Loaded(loaded) => Some(&loaded.request),
+        }
+    }
+
+    /// Whether `request` is the search showing or loading, perhaps with a
+    /// different limit or filters — the same query or citation list.
+    pub fn is_showing(&self, request: &SearchRequest) -> bool {
+        self.current_request()
+            .is_some_and(|current| current.kind == request.kind && current.query == request.query)
     }
 
     fn row_count(&self) -> usize {
@@ -161,10 +191,7 @@ impl SearchScreen {
     /// Shows `loaded`. A load-more of the search already showing keeps the
     /// selection where it was; a new search starts at the top.
     pub fn show_results(&mut self, loaded: LoadedSearch) {
-        let same_search = self.loaded().is_some_and(|previous| {
-            previous.request.kind == loaded.request.kind
-                && previous.request.query == loaded.request.query
-        });
+        let same_search = self.loaded().is_some() && self.is_showing(&loaded.request);
         self.state = SearchState::Loaded(Box::new(loaded));
         if same_search {
             self.selected = self.selected.min(self.row_count().saturating_sub(1));
@@ -289,21 +316,37 @@ fn provider_lines<E: ToString>(
         .collect()
 }
 
+/// Every provider's lines. A provider with no record of the seed or DOI,
+/// while another one listed results, is a note rather than a failure, as
+/// `pax refs` prints it.
 fn summary_lines(loaded: &LoadedSearch) -> Vec<String> {
+    let listed = loaded.results.values().any(Result::is_ok);
     PROVIDER_ORDER
         .iter()
-        .filter_map(|p| loaded.results.get(p).map(|r| provider_lines(*p, r)))
+        .filter_map(|p| {
+            loaded.results.get(p).map(|result| match result {
+                Err(ProviderFailure {
+                    message,
+                    no_record: true,
+                }) if listed => vec![format!("{p}: {message}")],
+                result => provider_lines(*p, result),
+            })
+        })
         .flatten()
         .collect()
 }
 
-fn loading_message(request: &SearchRequest) -> String {
+pub fn loading_message(request: &SearchRequest) -> String {
     if !request.is_paged() {
         return "Looking up…".to_string();
     }
+    let verb = match request.citations_label() {
+        Some(label) => format!("Listing {label}"),
+        None => "Searching".to_string(),
+    };
     match request.options.limit {
-        Limit::Count(n) => format!("Searching (up to {n} results per provider)…"),
-        _ => "Searching (every result each provider serves; this can be slow)…".to_string(),
+        Limit::Count(n) => format!("{verb} (up to {n} results per provider)…"),
+        _ => format!("{verb} (every result each provider serves; this can be slow)…"),
     }
 }
 
@@ -363,6 +406,11 @@ fn header_text(screen: &SearchScreen, editing: Option<InsertTarget>) -> String {
         ),
         format!("Filters (F: edit; year:YYYY[-YYYY] type:TYPE lang:CODE): {filters}"),
     ];
+    // A citation list isn't a typed query: say whose list is showing, under
+    // the query line a new search would start from.
+    if let Some(label) = screen.current_request().and_then(|r| r.citations_label()) {
+        lines.push(format!("Showing {label}"));
+    }
     if let Some(loaded) = screen.loaded() {
         lines.extend(summary_lines(loaded));
     }
@@ -380,8 +428,13 @@ fn render_message(frame: &mut Frame, area: Rect, message: &str) {
 /// papers after, as `pax search`'s `merged:` line), and the limit.
 fn list_title(loaded: &LoadedSearch) -> String {
     let merged = &loaded.merged;
+    let what = if loaded.request.kind.is_citations() {
+        loaded.request.kind.label()
+    } else {
+        "search"
+    };
     let mut title = format!(
-        " lazypax — search · {} papers · merged {} → {} ({} duplicates, {} unmatched)",
+        " lazypax — {what} · {} papers · merged {} → {} ({} duplicates, {} unmatched)",
         merged.after,
         merged.before,
         merged.after,
@@ -506,7 +559,10 @@ pub(crate) mod tests {
             ProviderId::OpenAlex,
             Ok(page(vec![work(ProviderId::OpenAlex, "2", "A")], 1)),
         );
-        results.insert(ProviderId::SemanticScholar, Err(ProviderError::NotFound));
+        results.insert(
+            ProviderId::SemanticScholar,
+            Err(ProviderError::NotFound.into()),
+        );
 
         let screen = loaded(results);
         let rows = screen.loaded().unwrap().rows();
@@ -796,7 +852,7 @@ pub(crate) mod tests {
         );
         results.insert(
             ProviderId::Crossref,
-            Err(ProviderError::Request("429 Too Many Requests".to_string())),
+            Err(ProviderError::Request("429 Too Many Requests".to_string()).into()),
         );
         let text = render(&loaded(results));
         assert!(text.contains("openalex: retrieved 1 of 120 — more available"));
@@ -816,5 +872,54 @@ pub(crate) mod tests {
         );
         let all = more.all().unwrap();
         assert!(loading_message(&all).contains("every result each provider serves"));
+    }
+
+    #[test]
+    fn loading_a_citation_list_names_it() {
+        let refs = SearchRequest::citations(SearchKind::References, "turing1936", "OCN");
+        assert_eq!(
+            loading_message(&refs),
+            "Listing references of \"OCN\" (turing1936) (up to 50 results per provider)…"
+        );
+    }
+
+    #[test]
+    fn a_provider_without_the_seed_is_a_note_only_while_another_listed() {
+        let no_record = || {
+            Err(ProviderFailure {
+                message: "semanticscholar has no record of the seed".to_string(),
+                no_record: true,
+            })
+        };
+        let mut results = SearchResults::new();
+        results.insert(ProviderId::SemanticScholar, no_record());
+        let alone = render(&loaded(results.clone()));
+        assert!(alone.contains("semanticscholar: failed — semanticscholar has no record"));
+
+        results.insert(
+            ProviderId::OpenAlex,
+            Ok(page(vec![work(ProviderId::OpenAlex, "1", "A")], 1)),
+        );
+        let text = render(&loaded(results));
+        assert!(text.contains("semanticscholar: semanticscholar has no record of the seed"));
+        assert!(!text.contains("failed"));
+    }
+
+    #[test]
+    fn a_filter_change_re_runs_the_citation_list_showing_from_the_default_limit() {
+        let refs = SearchRequest::citations(SearchKind::CitedBy, "openalex:W1", "T")
+            .all()
+            .unwrap();
+        let screen = SearchScreen {
+            filters: parse_filters("year:2010").unwrap(),
+            state: SearchState::Loading(refs),
+            ..Default::default()
+        };
+        let request = screen.refiltered_request();
+        assert_eq!(request.kind, SearchKind::CitedBy);
+        assert_eq!(request.query, "openalex:W1");
+        assert_eq!(request.options.limit, Limit::Count(50));
+        assert_eq!(request.options.filters, screen.filters);
+        assert!(screen.is_showing(&request));
     }
 }
