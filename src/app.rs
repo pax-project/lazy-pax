@@ -389,8 +389,15 @@ impl App {
         let Some(work) = self.selected_candidate_work() else {
             return;
         };
+        // A DOI with a title is excluded without a network lookup, under the
+        // key pax-core would derive from the record anyway; a work without
+        // one is resolved through its `provider:id`.
+        let reference = match work.doi.as_deref().map(str::trim) {
+            Some(doi) if !doi.is_empty() => doi.to_string(),
+            _ => work.id.to_string(),
+        };
         self.exclude = Some(ExcludePrompt {
-            reference: work.id.to_string(),
+            reference,
             title: work.title,
             reason: String::new(),
             stage: ExclusionStage::Screening,
@@ -1295,16 +1302,16 @@ mod tests {
     }
 
     fn with_search_results() -> App {
+        with_search_result(candidate_work())
+    }
+
+    fn with_search_result(work: pax_core::CandidateWork) -> App {
         use std::collections::HashMap;
         let mut app = App::new();
         let mut results = HashMap::new();
         results.insert(
             pax_core::ProviderId::OpenAlex,
-            Ok(pax_core::SearchPage::new(
-                vec![candidate_work()],
-                None,
-                None,
-            )),
+            Ok(pax_core::SearchPage::new(vec![work], None, None)),
         );
         app.update(Message::Job(
             1,
@@ -2452,6 +2459,20 @@ mod tests {
         app.apply(Action::GoToSearch);
         app.apply(Action::CancelInput);
         app
+    }
+
+    #[test]
+    fn a_result_with_a_doi_is_excluded_by_its_doi() {
+        let mut work = candidate_work();
+        work.doi = Some(" 10.1112/plms/s2-42.1.230 ".to_string());
+        let mut app = with_search_result(work);
+        app.apply(Action::GoToSearch);
+        app.apply(Action::CancelInput);
+        app.apply(Action::TriggerExclude);
+        assert_eq!(
+            app.exclude.as_ref().unwrap().reference,
+            "10.1112/plms/s2-42.1.230"
+        );
     }
 
     fn type_reason(app: &mut App, reason: &str) {
