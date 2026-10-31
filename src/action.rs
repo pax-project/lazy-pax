@@ -40,4 +40,6 @@ pub enum Action {
     OpenStats,
     TriggerExclude,
     CycleExclusionStage,
+    ListReferences,
+    ListCitedBy,
 }

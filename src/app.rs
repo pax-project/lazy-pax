@@ -6,13 +6,13 @@ use pax_core::{ExclusionStage, FetchOutcome, Limit, LogOutcome, PaxError};
 use crate::action::Action;
 use crate::job::{ExcludeRequest, JobKind, JobOutcome};
 use crate::message::{Effect, Message};
-use crate::query::SearchRequest;
+use crate::query::{SearchKind, SearchRequest};
 use crate::status::StatusBar;
 use crate::ui::detail::{DetailScreen, DetailSubject};
 use crate::ui::edit::EditScreen;
 use crate::ui::export::ExportScreen;
 use crate::ui::library::{LibraryScreen, LibraryState};
-use crate::ui::search::{LoadedSearch, SearchScreen, SearchState};
+use crate::ui::search::{LoadedSearch, SearchScreen, SearchState, loading_message};
 use crate::ui::stats::{StatsScreen, StatsState};
 
 /// Which top-level view is showing. Gains a variant per screen as each one
@@ -91,6 +91,17 @@ impl ExcludePrompt {
     }
 }
 
+/// What a citation list replaced when it opened, restored when Back leaves
+/// it: the search screen showing before (its results stay a step back) and
+/// the detail view of the seed (opening a result's detail replaces it).
+pub struct CitationsReturn {
+    /// `screen_stack`'s length while the citation list is the current
+    /// screen, telling its own Back apart from a Back further up the stack.
+    depth: usize,
+    search: SearchScreen,
+    detail: Option<DetailSubject>,
+}
+
 pub struct App {
     pub screen: Screen,
     pub screen_stack: Vec<Screen>,
@@ -117,6 +128,11 @@ pub struct App {
     pub check_selected: usize,
     pub export: ExportScreen,
     pub stats: StatsScreen,
+    /// One entry per citation list opened and not yet left, innermost last.
+    pub citations_trail: Vec<CitationsReturn>,
+    /// Whether the job in flight was started by `r`/`R`, so its results
+    /// open a new citation list rather than refresh the one showing.
+    pub opening_citations: bool,
 }
 
 impl App {
@@ -141,6 +157,8 @@ impl App {
             check_selected: 0,
             export: ExportScreen::default(),
             stats: StatsScreen::default(),
+            citations_trail: Vec::new(),
+            opening_citations: false,
         }
     }
 
@@ -165,8 +183,28 @@ impl App {
 
     /// Returns to whichever screen `push_screen` was last called from;
     /// Library if the stack is already empty (there's nowhere further back).
+    /// Leaving a citation list restores what it replaced, so Back lands on
+    /// the seed's detail view with the earlier search behind it.
     fn go_back(&mut self) {
+        if self.screen == Screen::Search
+            && self
+                .citations_trail
+                .last()
+                .is_some_and(|entry| entry.depth == self.screen_stack.len())
+            && let Some(entry) = self.citations_trail.pop()
+        {
+            self.search = entry.search;
+            self.detail.subject = entry.detail;
+        }
         self.screen = self.screen_stack.pop().unwrap_or(Screen::Library);
+    }
+
+    /// Back to the library with nothing to go back to, e.g. after an edit
+    /// or removal that may have changed the paper every other screen shows.
+    fn reset_to_library(&mut self) {
+        self.screen = Screen::Library;
+        self.screen_stack.clear();
+        self.citations_trail.clear();
     }
 
     /// Effects to run once, before the event loop starts.
@@ -360,6 +398,59 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::ListReferences => self.list_citations(SearchKind::References),
+            Action::ListCitedBy => self.list_citations(SearchKind::CitedBy),
+        }
+    }
+
+    /// Lists the detail view's paper's references or citations, seeded by
+    /// its citation key (a declared paper) or `provider:id` (a candidate),
+    /// as `pax refs` / `pax cited-by` take them. The current filters apply.
+    /// The detail view stays until the list arrives; an invalid seed leaves
+    /// it as it is.
+    fn list_citations(&mut self, kind: SearchKind) -> Vec<Effect> {
+        if self.screen != Screen::Detail {
+            return Vec::new();
+        }
+        let (seed, title) = match &self.detail.subject {
+            Some(DetailSubject::Declared(paper)) => (
+                paper.local.citation_key.clone(),
+                paper.identity.title.clone(),
+            ),
+            Some(DetailSubject::Candidate { work, .. }) => {
+                (work.id.to_string(), work.title.clone())
+            }
+            None => return Vec::new(),
+        };
+        if !self.start_job() {
+            return Vec::new();
+        }
+        let request =
+            SearchRequest::citations(kind, seed, title).with_filters(self.search.filters.clone());
+        self.status.pending(loading_message(&request));
+        self.opening_citations = true;
+        vec![Effect::Spawn(JobKind::Search(request))]
+    }
+
+    /// Shows a finished search. A newly opened citation list gets a search
+    /// screen of its own, over the detail view it was opened from; anything
+    /// else refreshes the search screen in place — unless it's a citation
+    /// list that was left while it loaded more, which is dropped rather
+    /// than shown over whatever replaced it.
+    fn show_search_results(&mut self, loaded: LoadedSearch) {
+        if std::mem::take(&mut self.opening_citations) {
+            let previous = std::mem::take(&mut self.search);
+            self.search.kind = previous.kind;
+            self.search.filters = loaded.request.options.filters.clone();
+            self.search.show_results(loaded);
+            self.push_screen(Screen::Search);
+            self.citations_trail.push(CitationsReturn {
+                depth: self.screen_stack.len(),
+                search: previous,
+                detail: self.detail.subject.clone(),
+            });
+        } else if !loaded.request.kind.is_citations() || self.search.is_showing(&loaded.request) {
+            self.search.show_results(loaded);
         }
     }
 
@@ -770,7 +861,7 @@ impl App {
             self.status.error(e);
             return Vec::new();
         }
-        let request = self.search.request(self.search.query.clone());
+        let request = self.search.refiltered_request();
         if request.query.is_empty() || !request.is_paged() {
             self.status
                 .success("Filters set; they apply to the next search");
@@ -864,12 +955,24 @@ impl App {
                 index,
                 log,
             } => {
-                self.search
-                    .show_results(LoadedSearch::new(*request, results, *index));
+                self.show_search_results(LoadedSearch::new(*request, results, *index));
                 self.status.clear_pending();
                 if let Some(log) = log {
                     self.report_search_log(log);
                 }
+            }
+            JobOutcome::SeedFailed { request, error } => {
+                self.opening_citations = false;
+                // Only a filter change re-runs a citation list in place
+                // (clearing its results first); there's nothing to go back
+                // to, so the screen says to search again.
+                if matches!(self.search.state, SearchState::Loading(_))
+                    && self.search.is_showing(&request)
+                {
+                    self.search.state = SearchState::Idle;
+                }
+                let label = request.citations_label().unwrap_or(request.query.clone());
+                self.status.error(format!("{label}: {error}"));
             }
             JobOutcome::Added(Ok(paper_ref)) => {
                 self.status
@@ -934,8 +1037,7 @@ impl App {
                     // paper; rather than patch every screen's stale copy of
                     // it, just return to Library, where the reload below
                     // picks up the current state.
-                    self.screen = Screen::Library;
-                    self.screen_stack.clear();
+                    self.reset_to_library();
                     self.job_running = true;
                     return vec![Effect::Spawn(JobKind::LoadLibrary)];
                 }
@@ -947,8 +1049,7 @@ impl App {
             } => match result {
                 Ok(()) => {
                     self.status.success(format!("Removed {citation_key}"));
-                    self.screen = Screen::Library;
-                    self.screen_stack.clear();
+                    self.reset_to_library();
                     self.job_running = true;
                     return vec![Effect::Spawn(JobKind::LoadLibrary)];
                 }
@@ -1046,7 +1147,6 @@ fn move_index_up(selected: &mut usize, len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::SearchKind;
 
     #[test]
     fn loading_library_ok_populates_state() {
@@ -2677,5 +2777,311 @@ mod tests {
             Some((crate::status::StatusKind::Error, msg))
                 if msg.contains("openalex:W1") && msg.contains("turing1936")
         ));
+    }
+
+    /// The detail view of `turing1936`, opened from the library.
+    fn on_declared_detail() -> App {
+        let mut app = with_two_papers();
+        app.library.selected = 0;
+        app.apply(Action::OpenDetail);
+        app
+    }
+
+    /// One provider's page of `titles`, as a citation job returns it.
+    fn citation_results(titles: &[&str], total: u64) -> crate::job::SearchResults {
+        let works = titles
+            .iter()
+            .enumerate()
+            .map(|(i, title)| pax_core::CandidateWork {
+                id: pax_core::CandidateId {
+                    provider: pax_core::ProviderId::OpenAlex,
+                    native_id: format!("W{}", i + 10),
+                },
+                title: title.to_string(),
+                ..candidate_work()
+            })
+            .collect();
+        let mut results = std::collections::HashMap::new();
+        results.insert(
+            pax_core::ProviderId::OpenAlex,
+            Ok(pax_core::SearchPage::new(works, Some(total), None)),
+        );
+        results.insert(
+            pax_core::ProviderId::SemanticScholar,
+            Err(pax_core::CitationError::SeedNotFound {
+                provider: pax_core::ProviderId::SemanticScholar,
+                key: "DOI:10.1/x".to_string(),
+            }
+            .into()),
+        );
+        results
+    }
+
+    fn spawned_search(effects: &[Effect]) -> SearchRequest {
+        match effects {
+            [Effect::Spawn(JobKind::Search(request))] => request.clone(),
+            _ => panic!("expected one search job"),
+        }
+    }
+
+    fn finish(app: &mut App, request: SearchRequest, results: crate::job::SearchResults) {
+        app.update(Message::Job(
+            2,
+            JobOutcome::Searched {
+                request: Box::new(request),
+                results,
+                index: Box::default(),
+                log: Some(LogOutcome::Written("research/search-log.jsonl".into())),
+            },
+        ));
+    }
+
+    /// `turing1936`'s references, listed and showing.
+    fn on_references() -> App {
+        let mut app = on_declared_detail();
+        let request = spawned_search(&app.apply(Action::ListReferences));
+        finish(&mut app, request, citation_results(&["Ref A", "Ref B"], 40));
+        app
+    }
+
+    #[test]
+    fn r_on_a_declared_paper_lists_its_references_by_citation_key() {
+        let mut app = on_declared_detail();
+        let effects = app.apply(Action::ListReferences);
+        let request = spawned_search(&effects);
+        assert_eq!(request.kind, SearchKind::References);
+        assert_eq!(request.query, "turing1936");
+        assert_eq!(request.seed_title.as_deref(), Some("On Computable Numbers"));
+        assert!(app.job_running);
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Pending, msg)) if msg.contains("references of")
+        ));
+        // The detail view stays until the list arrives.
+        assert!(matches!(app.screen, Screen::Detail));
+    }
+
+    #[test]
+    fn capital_r_on_a_candidate_lists_its_citations_by_provider_reference() {
+        let mut app = on_candidate_detail();
+        let request = spawned_search(&app.apply(Action::ListCitedBy));
+        assert_eq!(request.kind, SearchKind::CitedBy);
+        assert_eq!(request.query, "openalex:W1");
+    }
+
+    #[test]
+    fn listing_citations_applies_the_current_filters() {
+        let mut app = on_declared_detail();
+        app.search.filters = crate::query::parse_filters("year:2000-").unwrap();
+        let request = spawned_search(&app.apply(Action::ListCitedBy));
+        assert_eq!(request.options.filters, app.search.filters);
+    }
+
+    #[test]
+    fn citations_are_only_listed_from_a_detail_view_and_one_job_at_a_time() {
+        let mut app = with_two_papers();
+        assert!(app.apply(Action::ListReferences).is_empty());
+        let mut app = on_declared_detail();
+        app.job_running = true;
+        assert!(app.apply(Action::ListReferences).is_empty());
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg)) if msg.contains("Busy")
+        ));
+    }
+
+    #[test]
+    fn a_citation_list_opens_on_the_search_screen() {
+        let app = on_references();
+        assert!(matches!(app.screen, Screen::Search));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.status.message.is_none());
+        let loaded = app.search.loaded().unwrap();
+        assert_eq!(loaded.request.kind, SearchKind::References);
+        assert_eq!(loaded.rows().len(), 2);
+        let text = crate::ui::search::tests::render(&app.search);
+        assert!(
+            text.contains("Showing references of \"On Computable Numbers\" (turing1936)"),
+            "{text}"
+        );
+        assert!(text.contains("openalex: retrieved 2 of 40 — more available"));
+        // Semantic Scholar not knowing the seed is a note, not a failure.
+        assert!(text.contains("semanticscholar: semanticscholar has no record of the seed"));
+        assert!(text.contains("lazypax — references · 2 papers"));
+    }
+
+    #[test]
+    fn back_from_a_citation_list_returns_to_the_seeds_detail_view() {
+        let mut app = with_search_results();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::CancelInput);
+        app.apply(Action::OpenDetail); // the candidate "On Computable Numbers"
+        let request = spawned_search(&app.apply(Action::ListReferences));
+        finish(&mut app, request, citation_results(&["Ref A"], 1));
+        assert!(matches!(app.screen, Screen::Search));
+
+        // Opening a reference's detail replaces the seed's...
+        app.apply(Action::OpenDetail);
+        assert!(matches!(
+            app.detail.subject,
+            Some(DetailSubject::Candidate { ref work, .. }) if work.title == "Ref A"
+        ));
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Search));
+        // ...and leaving the list brings it back, with the earlier search.
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Detail));
+        assert!(matches!(
+            app.detail.subject,
+            Some(DetailSubject::Candidate { ref work, .. }) if work.title == "On Computable Numbers"
+        ));
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Search));
+        assert_eq!(app.search.loaded().unwrap().request.kind, SearchKind::Free);
+        assert!(app.citations_trail.is_empty());
+    }
+
+    #[test]
+    fn snowballing_twice_unwinds_one_list_at_a_time() {
+        let mut app = on_references();
+        app.apply(Action::OpenDetail); // Ref A
+        let request = spawned_search(&app.apply(Action::ListCitedBy));
+        assert_eq!(request.query, "openalex:W10");
+        finish(&mut app, request, citation_results(&["Citer"], 1));
+        assert_eq!(app.citations_trail.len(), 2);
+
+        app.apply(Action::Back);
+        assert!(matches!(
+            app.detail.subject,
+            Some(DetailSubject::Candidate { ref work, .. }) if work.title == "Ref A"
+        ));
+        app.apply(Action::Back);
+        assert_eq!(
+            app.search.loaded().unwrap().request.kind,
+            SearchKind::References
+        );
+        app.apply(Action::Back);
+        assert!(matches!(
+            app.detail.subject,
+            Some(DetailSubject::Declared(ref p)) if p.local.citation_key == "turing1936"
+        ));
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Library));
+    }
+
+    #[test]
+    fn an_invalid_seed_is_a_status_error_and_leaves_the_screen_as_it_was() {
+        let mut app = on_declared_detail();
+        let request = spawned_search(&app.apply(Action::ListReferences));
+        app.update(Message::Job(
+            2,
+            JobOutcome::SeedFailed {
+                request: Box::new(request),
+                error: PaxError::NoSuchPaper("turing1936".to_string()),
+            },
+        ));
+        assert!(matches!(app.screen, Screen::Detail));
+        assert!(matches!(app.search.state, SearchState::Idle));
+        assert!(app.citations_trail.is_empty());
+        assert!(!app.job_running);
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg))
+                if msg.starts_with("references of \"On Computable Numbers\" (turing1936): ")
+        ));
+    }
+
+    #[test]
+    fn loading_more_of_a_citation_list_refreshes_it_in_place() {
+        let mut app = on_references();
+        app.search.selected = 1;
+        let request = spawned_search(&app.apply(Action::LoadMore));
+        assert_eq!(request.kind, SearchKind::References);
+        assert_eq!(request.query, "turing1936");
+        assert_eq!(request.options.limit, Limit::Count(100));
+        finish(
+            &mut app,
+            request,
+            citation_results(&["Ref A", "Ref B", "Ref C"], 40),
+        );
+        assert!(matches!(app.screen, Screen::Search));
+        assert_eq!(app.citations_trail.len(), 1);
+        assert_eq!(app.search.loaded().unwrap().rows().len(), 3);
+        assert_eq!(app.search.selected, 1);
+    }
+
+    #[test]
+    fn a_citation_list_that_was_left_while_loading_more_is_dropped() {
+        let mut app = on_references();
+        let request = spawned_search(&app.apply(Action::LoadAll));
+        app.apply(Action::Back);
+        finish(&mut app, request, citation_results(&["Ref A"], 40));
+        assert!(matches!(app.screen, Screen::Detail));
+        assert!(app.search.loaded().is_none());
+    }
+
+    #[test]
+    fn changing_filters_re_runs_the_citation_list() {
+        let mut app = on_references();
+        let request = spawned_search(&type_filters(&mut app, "lang:en"));
+        assert_eq!(request.kind, SearchKind::References);
+        assert_eq!(request.query, "turing1936");
+        assert_eq!(request.options.filters.language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn a_new_query_over_a_citation_list_is_an_ordinary_search() {
+        let mut app = on_references();
+        app.apply(Action::EnterInsert(InsertTarget::SearchQuery));
+        app.apply(Action::CycleSearchMode); // free -> author
+        for c in "hewitt".chars() {
+            app.apply(Action::InputChar(c));
+        }
+        let request = spawned_search(&app.apply(Action::SubmitInput));
+        assert_eq!(request.kind, SearchKind::Author);
+        assert_eq!(request.query, "hewitt");
+        finish(&mut app, request, std::collections::HashMap::new());
+        assert_eq!(
+            app.search.loaded().unwrap().request.kind,
+            SearchKind::Author
+        );
+        assert!(!crate::ui::search::tests::render(&app.search).contains("Showing"));
+        // Back still leaves for the seed's detail view.
+        app.apply(Action::Back);
+        assert!(matches!(app.screen, Screen::Detail));
+    }
+
+    #[test]
+    fn a_citation_list_outside_a_library_warns_that_it_was_not_logged() {
+        let mut app = on_declared_detail();
+        let request = spawned_search(&app.apply(Action::ListCitedBy));
+        app.update(Message::Job(
+            2,
+            JobOutcome::Searched {
+                request: Box::new(request),
+                results: citation_results(&["Citer"], 1),
+                index: Box::default(),
+                log: Some(LogOutcome::NoLibrary),
+            },
+        ));
+        assert!(matches!(app.screen, Screen::Search));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Warning, msg)) if msg.contains("isn't recorded")
+        ));
+    }
+
+    #[test]
+    fn an_edit_after_snowballing_forgets_the_trail() {
+        let mut app = on_references();
+        app.update(Message::Job(
+            3,
+            JobOutcome::Edited {
+                citation_key: "turing1936".to_string(),
+                result: Ok(()),
+            },
+        ));
+        assert!(matches!(app.screen, Screen::Library));
+        assert!(app.citations_trail.is_empty());
     }
 }

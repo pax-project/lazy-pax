@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use pax_core::{
-    CandidateId, CheckReport, CitationError, Exclusion, ExclusionStage, FetchOutcome,
-    LibraryIndex, LogOutcome, PaperEdits, PaperRef, PaxError, ProviderError, ProviderId,
-    ResolvedArtifact, SearchPage, SyncReport,
+    CandidateId, CheckReport, CitationError, Exclusion, ExclusionStage, FetchOutcome, LibraryIndex,
+    LogOutcome, PaperEdits, PaperRef, PaxError, ProviderError, ProviderId, ResolvedArtifact,
+    SearchPage, SyncReport,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -131,6 +131,13 @@ pub enum JobOutcome {
         /// Whether the search was recorded in `research/search-log.jsonl`;
         /// `None` for a DOI lookup, which isn't logged.
         log: Option<LogOutcome>,
+    },
+    /// A citation list whose seed itself is invalid — a malformed reference
+    /// or a citation key not in the library — so no provider was asked and
+    /// nothing was logged.
+    SeedFailed {
+        request: Box<SearchRequest>,
+        error: PaxError,
     },
     Added(Result<PaperRef, PaxError>),
     Fetched {
@@ -386,9 +393,10 @@ async fn run_network_job(kind: JobKind, ctx: PaxCtx) -> JobOutcome {
     }
 }
 
-/// Runs `request` the way `pax search` does: free-text and author searches
-/// through the logged, paged entry points; a DOI lookup unpaged and
-/// unlogged, each provider's records wrapped as a page with no total.
+/// Runs `request` the way `pax search`, `pax refs` and `pax cited-by` do:
+/// free-text and author searches and citation lists through the logged,
+/// paged entry points; a DOI lookup unpaged and unlogged, each provider's
+/// records wrapped as a page with no total.
 async fn search(request: SearchRequest, ctx: &PaxCtx) -> JobOutcome {
     let (root, config, options) = (&ctx.root, &ctx.config, &request.options);
     let (results, log) = match request.kind {
@@ -413,6 +421,22 @@ async fn search(request: SearchRequest, ctx: &PaxCtx) -> JobOutcome {
                 })
                 .collect();
             (for_display(results), None)
+        }
+        SearchKind::References | SearchKind::CitedBy => {
+            let logged = if request.kind == SearchKind::References {
+                pax_core::references_logged(&request.query, options, root, config).await
+            } else {
+                pax_core::cited_by_logged(&request.query, options, root, config).await
+            };
+            match logged {
+                Ok(logged) => (for_display(logged.results), Some(logged.log)),
+                Err(error) => {
+                    return JobOutcome::SeedFailed {
+                        request: Box::new(request),
+                        error,
+                    };
+                }
+            }
         }
     };
     JobOutcome::Searched {

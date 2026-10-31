@@ -86,6 +86,8 @@ fn normal_mode_key(screen: &Screen, pending: &mut PendingInput, key: KeyEvent) -
             Some(Action::OpenDetail)
         }
         KeyCode::Char('a') if matches!(screen, Screen::Detail) => Some(Action::AddCandidate),
+        KeyCode::Char('r') if matches!(screen, Screen::Detail) => Some(Action::ListReferences),
+        KeyCode::Char('R') if matches!(screen, Screen::Detail) => Some(Action::ListCitedBy),
         KeyCode::Char('f') if matches!(screen, Screen::Library | Screen::Detail) => {
             Some(Action::Fetch)
         }
@@ -1006,5 +1008,38 @@ mod tests {
         assert_eq!(map(key_code(KeyCode::Esc)), Some(Action::Back));
         assert_eq!(map(key('j')), Some(Action::MoveDown));
         assert_eq!(map(key('k')), Some(Action::MoveUp));
+    }
+
+    #[test]
+    fn r_and_capital_r_list_references_and_citations_on_detail_only() {
+        let mut pending = PendingInput::default();
+        assert_eq!(
+            map_key(
+                &Screen::Detail,
+                &Mode::Normal,
+                false,
+                &mut pending,
+                key('r')
+            ),
+            Some(Action::ListReferences)
+        );
+        assert_eq!(
+            map_key(
+                &Screen::Detail,
+                &Mode::Normal,
+                false,
+                &mut pending,
+                key('R')
+            ),
+            Some(Action::ListCitedBy)
+        );
+        for screen in [Screen::Library, Screen::Search, Screen::Edit, Screen::Stats] {
+            for c in ['r', 'R'] {
+                assert_eq!(
+                    map_key(&screen, &Mode::Normal, false, &mut pending, key(c)),
+                    None
+                );
+            }
+        }
     }
 }
