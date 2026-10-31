@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::InsertTarget;
-use crate::job::SearchResults;
+use crate::job::{ProviderFailure, SearchResults};
 use crate::query::{SearchKind, SearchRequest, format_filters, parse_filters};
 use crate::ui::{SELECTED_ROW_STYLE, wrapped_height};
 
@@ -289,10 +289,22 @@ fn provider_lines<E: ToString>(
         .collect()
 }
 
+/// Every provider's lines. A provider with no record of the seed or DOI,
+/// while another one listed results, is a note rather than a failure, as
+/// `pax refs` prints it.
 fn summary_lines(loaded: &LoadedSearch) -> Vec<String> {
+    let listed = loaded.results.values().any(Result::is_ok);
     PROVIDER_ORDER
         .iter()
-        .filter_map(|p| loaded.results.get(p).map(|r| provider_lines(*p, r)))
+        .filter_map(|p| {
+            loaded.results.get(p).map(|result| match result {
+                Err(ProviderFailure {
+                    message,
+                    no_record: true,
+                }) if listed => vec![format!("{p}: {message}")],
+                result => provider_lines(*p, result),
+            })
+        })
         .flatten()
         .collect()
 }
@@ -506,7 +518,10 @@ pub(crate) mod tests {
             ProviderId::OpenAlex,
             Ok(page(vec![work(ProviderId::OpenAlex, "2", "A")], 1)),
         );
-        results.insert(ProviderId::SemanticScholar, Err(ProviderError::NotFound));
+        results.insert(
+            ProviderId::SemanticScholar,
+            Err(ProviderError::NotFound.into()),
+        );
 
         let screen = loaded(results);
         let rows = screen.loaded().unwrap().rows();
@@ -796,7 +811,7 @@ pub(crate) mod tests {
         );
         results.insert(
             ProviderId::Crossref,
-            Err(ProviderError::Request("429 Too Many Requests".to_string())),
+            Err(ProviderError::Request("429 Too Many Requests".to_string()).into()),
         );
         let text = render(&loaded(results));
         assert!(text.contains("openalex: retrieved 1 of 120 — more available"));
@@ -816,5 +831,27 @@ pub(crate) mod tests {
         );
         let all = more.all().unwrap();
         assert!(loading_message(&all).contains("every result each provider serves"));
+    }
+
+    #[test]
+    fn a_provider_without_the_seed_is_a_note_only_while_another_listed() {
+        let no_record = || {
+            Err(ProviderFailure {
+                message: "semanticscholar has no record of the seed".to_string(),
+                no_record: true,
+            })
+        };
+        let mut results = SearchResults::new();
+        results.insert(ProviderId::SemanticScholar, no_record());
+        let alone = render(&loaded(results.clone()));
+        assert!(alone.contains("semanticscholar: failed — semanticscholar has no record"));
+
+        results.insert(
+            ProviderId::OpenAlex,
+            Ok(page(vec![work(ProviderId::OpenAlex, "1", "A")], 1)),
+        );
+        let text = render(&loaded(results));
+        assert!(text.contains("semanticscholar: semanticscholar has no record of the seed"));
+        assert!(!text.contains("failed"));
     }
 }

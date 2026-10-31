@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use pax_core::{
-    CandidateId, CheckReport, Exclusion, ExclusionStage, FetchOutcome, LibraryIndex, LogOutcome,
-    PaperEdits, PaperRef, PaxError, ProviderError, ProviderId, ResolvedArtifact, SearchPage,
-    SyncReport,
+    CandidateId, CheckReport, CitationError, Exclusion, ExclusionStage, FetchOutcome,
+    LibraryIndex, LogOutcome, PaperEdits, PaperRef, PaxError, ProviderError, ProviderId,
+    ResolvedArtifact, SearchPage, SyncReport,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -14,7 +14,69 @@ use crate::query::{SearchKind, SearchRequest};
 
 pub type JobId = u64;
 
-pub type SearchResults = HashMap<ProviderId, Result<SearchPage, ProviderError>>;
+/// Each provider's page, or why it has none, by provider: what the search
+/// screen shows for a search and for a citation list alike.
+pub type SearchResults = HashMap<ProviderId, Result<SearchPage, ProviderFailure>>;
+
+/// One provider's failure, as the search screen shows it. A search fails
+/// per provider with a `ProviderError` and a citation list with a
+/// `CitationError`; the screen needs neither type, only the message and
+/// whether the provider simply has no record of what it was asked about —
+/// an answer, not a failure, which `pax refs` prints as a note rather than an
+/// error. Converting once, in the job, keeps one `SearchResults` type for
+/// both, so the screen, merging and load-more stay shared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderFailure {
+    pub message: String,
+    /// The provider has no record of the seed or DOI it was asked about.
+    pub no_record: bool,
+}
+
+impl std::fmt::Display for ProviderFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<ProviderError> for ProviderFailure {
+    fn from(e: ProviderError) -> Self {
+        ProviderFailure {
+            no_record: matches!(e, ProviderError::NotFound),
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<CitationError> for ProviderFailure {
+    /// No record when the CLI's `pax refs` counts it as not found: the seed
+    /// isn't known to this provider, or fetching it to learn its DOI found
+    /// no such work. A failed request stays a failure.
+    fn from(e: CitationError) -> Self {
+        let no_record = match &e {
+            CitationError::Unresolvable {
+                lookup_error: Some(lookup),
+                ..
+            } => matches!(lookup.error, ProviderError::NotFound),
+            CitationError::Unresolvable { .. } | CitationError::SeedNotFound { .. } => true,
+            CitationError::Provider(e) => matches!(e, ProviderError::NotFound),
+            _ => false,
+        };
+        ProviderFailure {
+            message: e.to_string(),
+            no_record,
+        }
+    }
+}
+
+/// `results` with each provider's error converted for display.
+fn for_display<E: Into<ProviderFailure>>(
+    results: HashMap<ProviderId, Result<SearchPage, E>>,
+) -> SearchResults {
+    results
+        .into_iter()
+        .map(|(provider, result)| (provider, result.map_err(Into::into)))
+        .collect()
+}
 
 /// The only module allowed to call into `pax_core` directly — every other
 /// module works with `pax_core` *types* (`Paper`, `PaxError`, ...) but never
@@ -332,12 +394,12 @@ async fn search(request: SearchRequest, ctx: &PaxCtx) -> JobOutcome {
     let (results, log) = match request.kind {
         SearchKind::Free => {
             let logged = pax_core::search_all_logged(&request.query, options, root, config).await;
-            (logged.results, Some(logged.log))
+            (for_display(logged.results), Some(logged.log))
         }
         SearchKind::Author => {
             let logged =
                 pax_core::search_by_author_logged(&request.query, options, root, config).await;
-            (logged.results, Some(logged.log))
+            (for_display(logged.results), Some(logged.log))
         }
         SearchKind::Doi => {
             let results = pax_core::search_by_doi(&request.query, config)
@@ -350,7 +412,7 @@ async fn search(request: SearchRequest, ctx: &PaxCtx) -> JobOutcome {
                     )
                 })
                 .collect();
-            (results, None)
+            (for_display(results), None)
         }
     };
     JobOutcome::Searched {
@@ -420,4 +482,68 @@ fn upload_pdf(citation_key: &str, root: &Path, local_path: &Path) -> Result<Stri
     };
     pax_core::edit_paper(citation_key, root, &edits)?;
     Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pax_core::SeedLookupError;
+
+    #[test]
+    fn a_provider_error_keeps_its_message_and_not_found_is_no_record() {
+        let failure = ProviderFailure::from(ProviderError::Request("timeout".to_string()));
+        assert_eq!(failure.to_string(), "request failed: timeout");
+        assert!(!failure.no_record);
+        assert!(ProviderFailure::from(ProviderError::NotFound).no_record);
+    }
+
+    #[test]
+    fn a_citation_error_is_no_record_only_when_the_provider_lacks_the_seed() {
+        let not_found = ProviderFailure::from(CitationError::SeedNotFound {
+            provider: ProviderId::OpenAlex,
+            key: "doi:10.1/x".to_string(),
+        });
+        assert!(not_found.no_record);
+        assert!(not_found.message.contains("has no record of the seed"));
+
+        let unresolvable = CitationError::Unresolvable {
+            provider: ProviderId::OpenAlex,
+            lookup_error: None,
+        };
+        assert!(ProviderFailure::from(unresolvable).no_record);
+
+        let lookup_failed = CitationError::Unresolvable {
+            provider: ProviderId::OpenAlex,
+            lookup_error: Some(SeedLookupError {
+                provider: ProviderId::ArXiv,
+                error: ProviderError::Request("503".to_string()),
+            }),
+        };
+        assert!(!ProviderFailure::from(lookup_failed).no_record);
+
+        let request = CitationError::Provider(ProviderError::Request("429".to_string()));
+        assert!(!ProviderFailure::from(request).no_record);
+    }
+
+    #[test]
+    fn for_display_converts_every_providers_error() {
+        let mut results = HashMap::new();
+        results.insert(
+            ProviderId::OpenAlex,
+            Ok(SearchPage::new(Vec::new(), Some(0), None)),
+        );
+        results.insert(
+            ProviderId::SemanticScholar,
+            Err(CitationError::Provider(ProviderError::NotFound)),
+        );
+        let shown = for_display(results);
+        assert!(shown[&ProviderId::OpenAlex].is_ok());
+        assert_eq!(
+            shown[&ProviderId::SemanticScholar].as_ref().unwrap_err(),
+            &ProviderFailure {
+                message: "not found".to_string(),
+                no_record: true,
+            }
+        );
+    }
 }
