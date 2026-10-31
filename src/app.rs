@@ -1,10 +1,10 @@
 use std::io::ErrorKind;
 
 use crossterm::event::{Event, KeyEventKind};
-use pax_core::{FetchOutcome, Limit, LogOutcome, PaxError};
+use pax_core::{ExclusionStage, FetchOutcome, Limit, LogOutcome, PaxError};
 
 use crate::action::Action;
-use crate::job::{JobKind, JobOutcome};
+use crate::job::{ExcludeRequest, JobKind, JobOutcome};
 use crate::message::{Effect, Message};
 use crate::query::SearchRequest;
 use crate::status::StatusBar;
@@ -52,6 +52,7 @@ pub enum InsertTarget {
     EditSourceUrl,
     UploadPdfPath,
     ExportPath,
+    ExcludeReason,
 }
 
 /// Tracks a `g` press waiting for a second key (`gg` -> go to top). Reset on
@@ -70,6 +71,26 @@ pub struct ConfirmPrompt {
     pub on_confirm: Action,
 }
 
+/// The exclusion being composed: the paper `x` was pressed on, frozen at
+/// that moment so moving the selection can't change the target, and the
+/// reason and stage typed so far. Shown on the status line while
+/// `Mode::Insert(InsertTarget::ExcludeReason)` is active.
+pub struct ExcludePrompt {
+    pub reference: String,
+    pub title: String,
+    pub reason: String,
+    pub stage: ExclusionStage,
+}
+
+impl ExcludePrompt {
+    fn toggle_stage(&mut self) {
+        self.stage = match self.stage {
+            ExclusionStage::Screening => ExclusionStage::FullText,
+            _ => ExclusionStage::Screening,
+        };
+    }
+}
+
 pub struct App {
     pub screen: Screen,
     pub screen_stack: Vec<Screen>,
@@ -77,6 +98,7 @@ pub struct App {
     pub should_quit: bool,
     pub pending: PendingInput,
     pub confirm: Option<ConfirmPrompt>,
+    pub exclude: Option<ExcludePrompt>,
     pub status: StatusBar,
     /// Whether a background job is currently in flight. MVP keeps this to
     /// one job at a time rather than a queue — a job-triggering action
@@ -106,6 +128,7 @@ impl App {
             should_quit: false,
             pending: PendingInput::default(),
             confirm: None,
+            exclude: None,
             status: StatusBar::default(),
             job_running: false,
             library: LibraryScreen::default(),
@@ -207,6 +230,8 @@ impl App {
                     InsertTarget::SearchQuery => self.search.begin_query_edit(),
                     InsertTarget::SearchFilters => self.search.begin_filter_edit(),
                     InsertTarget::ExportPath => self.export.buffer = self.export.path.clone(),
+                    // Opened only by `TriggerExclude`, which picks the paper.
+                    InsertTarget::ExcludeReason => return Vec::new(),
                     edit_target => self.edit.begin_field_edit(edit_target),
                 }
                 self.mode = Mode::Insert(target);
@@ -214,6 +239,7 @@ impl App {
             }
             Action::CancelInput => {
                 self.mode = Mode::Normal;
+                self.exclude = None;
                 Vec::new()
             }
             Action::SubmitInput => self.submit_input(),
@@ -324,7 +350,84 @@ impl App {
             Action::LoadMore => self.load_more(false),
             Action::LoadAll => self.load_more(true),
             Action::OpenStats => self.open_stats(),
+            Action::TriggerExclude => {
+                self.begin_exclude();
+                Vec::new()
+            }
+            Action::CycleExclusionStage => {
+                if let Some(prompt) = &mut self.exclude {
+                    prompt.toggle_stage();
+                }
+                Vec::new()
+            }
         }
+    }
+
+    /// The search result the current screen shows: the Search screen's
+    /// highlighted row, or the candidate a Detail view is showing. Its
+    /// representative record, the one `a` would add.
+    fn selected_candidate_work(&self) -> Option<pax_core::CandidateWork> {
+        match self.screen {
+            Screen::Search => self.search.selected_candidate().map(|(work, _)| work),
+            Screen::Detail => match &self.detail.subject {
+                Some(DetailSubject::Candidate { work, .. }) => Some(work.clone()),
+                _ => None,
+            },
+            Screen::Library
+            | Screen::Edit
+            | Screen::SyncReport
+            | Screen::CheckReport
+            | Screen::Export
+            | Screen::Stats => None,
+        }
+    }
+
+    /// Opens the exclusion prompt on the selected search result. A declared
+    /// paper's detail has nothing to exclude: pax-core refuses to exclude a
+    /// paper that's in the library.
+    fn begin_exclude(&mut self) {
+        let Some(work) = self.selected_candidate_work() else {
+            return;
+        };
+        // A DOI with a title is excluded without a network lookup, under the
+        // key pax-core would derive from the record anyway; a work without
+        // one is resolved through its `provider:id`.
+        let reference = match work.doi.as_deref().map(str::trim) {
+            Some(doi) if !doi.is_empty() => doi.to_string(),
+            _ => work.id.to_string(),
+        };
+        self.exclude = Some(ExcludePrompt {
+            reference,
+            title: work.title,
+            reason: String::new(),
+            stage: ExclusionStage::Screening,
+        });
+        self.mode = Mode::Insert(InsertTarget::ExcludeReason);
+    }
+
+    /// Dispatches the exclusion the prompt describes. The reason is
+    /// required; without one nothing is recorded.
+    fn submit_exclusion(&mut self) -> Vec<Effect> {
+        let Some(prompt) = self.exclude.take() else {
+            return Vec::new();
+        };
+        let reason = prompt.reason.trim().to_string();
+        if reason.is_empty() {
+            self.status
+                .error("An exclusion needs a reason — nothing was excluded");
+            return Vec::new();
+        }
+        if !self.start_job() {
+            return Vec::new();
+        }
+        self.status
+            .pending(format!("Excluding {} ({})…", prompt.title, prompt.stage));
+        vec![Effect::Spawn(JobKind::Exclude(ExcludeRequest {
+            reference: prompt.reference,
+            title: prompt.title,
+            reason,
+            stage: prompt.stage,
+        }))]
     }
 
     fn trigger_init(&mut self) -> Vec<Effect> {
@@ -568,6 +671,11 @@ impl App {
             Mode::Insert(InsertTarget::SearchQuery) => self.search.query_buffer.push(c),
             Mode::Insert(InsertTarget::SearchFilters) => self.search.filter_buffer.push(c),
             Mode::Insert(InsertTarget::ExportPath) => self.export.buffer.push(c),
+            Mode::Insert(InsertTarget::ExcludeReason) => {
+                if let Some(prompt) = &mut self.exclude {
+                    prompt.reason.push(c);
+                }
+            }
             Mode::Insert(_) => self.edit.buffer.push(c),
             Mode::Normal => {}
         }
@@ -586,6 +694,11 @@ impl App {
             }
             Mode::Insert(InsertTarget::ExportPath) => {
                 self.export.buffer.pop();
+            }
+            Mode::Insert(InsertTarget::ExcludeReason) => {
+                if let Some(prompt) = &mut self.exclude {
+                    prompt.reason.pop();
+                }
             }
             Mode::Insert(_) => {
                 self.edit.buffer.pop();
@@ -608,6 +721,7 @@ impl App {
                 Vec::new()
             }
             Mode::Insert(InsertTarget::UploadPdfPath) => self.submit_upload_pdf_path(),
+            Mode::Insert(InsertTarget::ExcludeReason) => self.submit_exclusion(),
             Mode::Insert(target) => {
                 self.edit.commit_field_edit(target);
                 Vec::new()
@@ -894,6 +1008,24 @@ impl App {
                 }
                 Err(e) => self.status.error(format!("{citation_key}: {e}")),
             },
+            JobOutcome::Excluded { reference, result } => match result {
+                Ok((exclusion, index)) => {
+                    self.search.replace_index(*index);
+                    self.status.success(format!(
+                        "Excluded {} ({}): {}",
+                        exclusion.title, exclusion.stage, exclusion.reason
+                    ));
+                }
+                // `pax exclude` asks for `--title` here; lazypax always
+                // passes the result's title, so only an untitled result
+                // with an unreachable provider ends up here.
+                Err(PaxError::ExclusionTitleUnresolved(_, detail)) => self.status.error(format!(
+                    "Couldn't exclude {reference}: the result has no title and its provider couldn't supply one ({detail})"
+                )),
+                Err(e) => self
+                    .status
+                    .error(format!("Couldn't exclude {reference}: {e}")),
+            },
         }
         Vec::new()
     }
@@ -1170,16 +1302,16 @@ mod tests {
     }
 
     fn with_search_results() -> App {
+        with_search_result(candidate_work())
+    }
+
+    fn with_search_result(work: pax_core::CandidateWork) -> App {
         use std::collections::HashMap;
         let mut app = App::new();
         let mut results = HashMap::new();
         results.insert(
             pax_core::ProviderId::OpenAlex,
-            Ok(pax_core::SearchPage::new(
-                vec![candidate_work()],
-                None,
-                None,
-            )),
+            Ok(pax_core::SearchPage::new(vec![work], None, None)),
         );
         app.update(Message::Job(
             1,
@@ -2317,6 +2449,233 @@ mod tests {
         assert!(matches!(
             effects.as_slice(),
             [Effect::Spawn(JobKind::Stats)]
+        ));
+    }
+
+    /// The Search screen with one result (`openalex:W1`, "On Computable
+    /// Numbers") highlighted.
+    fn on_search_results() -> App {
+        let mut app = with_search_results();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::CancelInput);
+        app
+    }
+
+    #[test]
+    fn a_result_with_a_doi_is_excluded_by_its_doi() {
+        let mut work = candidate_work();
+        work.doi = Some(" 10.1112/plms/s2-42.1.230 ".to_string());
+        let mut app = with_search_result(work);
+        app.apply(Action::GoToSearch);
+        app.apply(Action::CancelInput);
+        app.apply(Action::TriggerExclude);
+        assert_eq!(
+            app.exclude.as_ref().unwrap().reference,
+            "10.1112/plms/s2-42.1.230"
+        );
+    }
+
+    fn type_reason(app: &mut App, reason: &str) {
+        for c in reason.chars() {
+            app.apply(Action::InputChar(c));
+        }
+    }
+
+    fn excluded_index() -> pax_core::LibraryIndex {
+        let mut exclusions = pax_core::Exclusions::default();
+        exclusions.upsert(pax_core::Exclusion::new(
+            "openalex:W1".to_string(),
+            "On Computable Numbers".to_string(),
+            "off topic".to_string(),
+            ExclusionStage::Screening,
+        ));
+        pax_core::LibraryIndex::new(&pax_core::Library::new(Vec::new()), &exclusions)
+    }
+
+    #[test]
+    fn x_on_a_search_result_opens_the_reason_prompt_at_the_screening_stage() {
+        let mut app = on_search_results();
+        let effects = app.apply(Action::TriggerExclude);
+        assert!(effects.is_empty());
+        assert!(matches!(
+            app.mode,
+            Mode::Insert(InsertTarget::ExcludeReason)
+        ));
+        let prompt = app.exclude.as_ref().unwrap();
+        assert_eq!(prompt.reference, "openalex:W1");
+        assert_eq!(prompt.title, "On Computable Numbers");
+        assert_eq!(prompt.stage, ExclusionStage::Screening);
+        assert!(prompt.reason.is_empty());
+    }
+
+    #[test]
+    fn x_on_a_candidate_detail_opens_the_prompt_for_that_candidate() {
+        let mut app = on_candidate_detail();
+        app.apply(Action::TriggerExclude);
+        assert!(matches!(
+            &app.exclude,
+            Some(prompt) if prompt.reference == "openalex:W1"
+        ));
+    }
+
+    #[test]
+    fn x_does_nothing_on_a_declared_paper_or_before_any_results() {
+        let mut app = with_two_papers();
+        app.apply(Action::OpenDetail); // turing1936's declared detail
+        app.apply(Action::TriggerExclude);
+        assert!(app.exclude.is_none());
+        assert!(matches!(app.mode, Mode::Normal));
+
+        let mut app = App::new();
+        app.apply(Action::GoToSearch);
+        app.apply(Action::CancelInput);
+        app.apply(Action::TriggerExclude);
+        assert!(app.exclude.is_none());
+    }
+
+    #[test]
+    fn tab_toggles_the_stage_between_screening_and_full_text() {
+        let mut app = on_search_results();
+        app.apply(Action::TriggerExclude);
+        app.apply(Action::CycleExclusionStage);
+        assert_eq!(
+            app.exclude.as_ref().unwrap().stage,
+            ExclusionStage::FullText
+        );
+        app.apply(Action::CycleExclusionStage);
+        assert_eq!(
+            app.exclude.as_ref().unwrap().stage,
+            ExclusionStage::Screening
+        );
+    }
+
+    #[test]
+    fn submitting_a_reason_dispatches_the_exclusion_with_the_rows_reference_and_title() {
+        let mut app = on_search_results();
+        app.apply(Action::TriggerExclude);
+        type_reason(&mut app, "  not empirical x");
+        app.apply(Action::InputBackspace);
+        app.apply(Action::InputBackspace);
+        app.apply(Action::CycleExclusionStage);
+        let effects = app.apply(Action::SubmitInput);
+        let [Effect::Spawn(JobKind::Exclude(request))] = effects.as_slice() else {
+            panic!("expected one exclude job");
+        };
+        assert_eq!(
+            *request,
+            ExcludeRequest {
+                reference: "openalex:W1".to_string(),
+                title: "On Computable Numbers".to_string(),
+                reason: "not empirical".to_string(),
+                stage: ExclusionStage::FullText,
+            }
+        );
+        assert!(app.job_running);
+        assert!(app.exclude.is_none());
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Pending, _))
+        ));
+    }
+
+    #[test]
+    fn an_empty_reason_is_an_error_and_excludes_nothing() {
+        let mut app = on_search_results();
+        app.apply(Action::TriggerExclude);
+        type_reason(&mut app, "   ");
+        let effects = app.apply(Action::SubmitInput);
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+        assert!(app.exclude.is_none());
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg)) if msg.contains("reason")
+        ));
+    }
+
+    #[test]
+    fn esc_cancels_the_exclusion_prompt() {
+        let mut app = on_search_results();
+        app.apply(Action::TriggerExclude);
+        type_reason(&mut app, "off topic");
+        let effects = app.apply(Action::CancelInput);
+        assert!(effects.is_empty());
+        assert!(app.exclude.is_none());
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(!app.job_running);
+    }
+
+    #[test]
+    fn an_exclusion_while_another_job_runs_is_rejected() {
+        let mut app = on_search_results();
+        app.job_running = true;
+        app.apply(Action::TriggerExclude);
+        type_reason(&mut app, "off topic");
+        assert!(app.apply(Action::SubmitInput).is_empty());
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg)) if msg.contains("Busy")
+        ));
+    }
+
+    #[test]
+    fn a_successful_exclusion_swaps_in_the_reloaded_index_and_flags_the_row() {
+        let mut app = on_search_results();
+        app.apply(Action::TriggerExclude);
+        type_reason(&mut app, "off topic");
+        app.apply(Action::SubmitInput);
+        assert!(!crate::ui::search::tests::render(&app.search).contains("[excluded]"));
+
+        let exclusion = pax_core::Exclusion::new(
+            "openalex:W1".to_string(),
+            "On Computable Numbers".to_string(),
+            "off topic".to_string(),
+            ExclusionStage::Screening,
+        );
+        let effects = app.update(Message::Job(
+            2,
+            JobOutcome::Excluded {
+                reference: "openalex:W1".to_string(),
+                result: Ok((exclusion, Box::new(excluded_index()))),
+            },
+        ));
+        assert!(effects.is_empty());
+        assert!(!app.job_running);
+        assert!(
+            crate::ui::search::tests::render(&app.search)
+                .contains("On Computable Numbers [excluded]")
+        );
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Success, msg))
+                if msg == "Excluded On Computable Numbers (screening): off topic"
+        ));
+    }
+
+    #[test]
+    fn a_refused_exclusion_shows_the_error_and_keeps_the_flags() {
+        let mut app = on_search_results();
+        app.apply(Action::TriggerExclude);
+        type_reason(&mut app, "off topic");
+        app.apply(Action::SubmitInput);
+        app.update(Message::Job(
+            2,
+            JobOutcome::Excluded {
+                reference: "openalex:W1".to_string(),
+                result: Err(PaxError::ExcludingDeclaredPaper(
+                    "openalex:W1".to_string(),
+                    "turing1936".to_string(),
+                )),
+            },
+        ));
+        assert!(!app.job_running);
+        assert!(!crate::ui::search::tests::render(&app.search).contains("[excluded]"));
+        assert!(matches!(
+            &app.status.message,
+            Some((crate::status::StatusKind::Error, msg))
+                if msg.contains("openalex:W1") && msg.contains("turing1936")
         ));
     }
 }

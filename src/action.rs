@@ -38,4 +38,6 @@ pub enum Action {
     LoadMore,
     LoadAll,
     OpenStats,
+    TriggerExclude,
+    CycleExclusionStage,
 }

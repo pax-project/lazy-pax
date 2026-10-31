@@ -11,7 +11,9 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use crate::app::{App, InsertTarget, Mode, Screen};
+use pax_core::ExclusionStage;
+
+use crate::app::{App, ExcludePrompt, InsertTarget, Mode, Screen};
 use crate::status::StatusKind;
 use crate::ui::detail::DetailSubject;
 use crate::ui::library::LibraryState;
@@ -97,6 +99,13 @@ fn status_content(app: &App) -> (String, Style) {
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         )
+    } else if let Some(prompt) = &app.exclude {
+        (
+            exclude_prompt_text(prompt),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )
     } else if let Some((kind, msg)) = &app.status.message {
         let color = match kind {
             StatusKind::Error => Color::Red,
@@ -108,6 +117,20 @@ fn status_content(app: &App) -> (String, Style) {
     } else {
         (hint_text(app), Style::default())
     }
+}
+
+/// The exclusion prompt: which paper, the stage (and what Tab switches it
+/// to), and the reason being typed. Takes precedence over any status
+/// message, so an earlier message can't hide the prompt being answered.
+fn exclude_prompt_text(prompt: &ExcludePrompt) -> String {
+    let other = match prompt.stage {
+        ExclusionStage::Screening => ExclusionStage::FullText,
+        _ => ExclusionStage::Screening,
+    };
+    format!(
+        "Exclude \"{}\" — stage: {} (Tab: switch to {other})  reason: {}▏  (Enter: exclude, Esc: cancel)",
+        prompt.title, prompt.stage, prompt.reason
+    )
 }
 
 /// How many rows `text` needs to word-wrap into within `width` columns —
@@ -150,14 +173,16 @@ fn hint_text(app: &App) -> String {
             Mode::Insert(InsertTarget::SearchFilters) => {
                 "Enter: apply filters (and re-run the search)  Esc: cancel".to_string()
             }
-            _ => "Enter/l: view  /: query  Tab: mode  F: filters  m: more  M: all  Esc: back  q: quit"
+            _ => "Enter/l: view  x: exclude  /: query  Tab: mode  F: filters  m: more  M: all  Esc: back  q: quit"
                 .to_string(),
         },
         Screen::Detail => match &app.detail.subject {
             Some(DetailSubject::Candidate { in_library: true, .. }) => {
                 "a: add anyway (already in library)  Esc: back  q: quit".to_string()
             }
-            Some(DetailSubject::Candidate { in_library: false, .. }) => "a: add  Esc: back  q: quit".to_string(),
+            Some(DetailSubject::Candidate { in_library: false, .. }) => {
+                "a: add  x: exclude  Esc: back  q: quit".to_string()
+            }
             Some(DetailSubject::Declared(_)) => {
                 "f: fetch  o: open  e: edit  d: remove  Esc: back  q: quit".to_string()
             }
@@ -200,6 +225,45 @@ mod tests {
     #[test]
     fn empty_text_still_reserves_one_row() {
         assert_eq!(wrapped_height("", 80), 1);
+    }
+
+    fn excluding(stage: ExclusionStage) -> App {
+        let mut app = App::new();
+        app.screen = Screen::Search;
+        app.mode = Mode::Insert(InsertTarget::ExcludeReason);
+        app.exclude = Some(ExcludePrompt {
+            reference: "openalex:W1".to_string(),
+            title: "Actors".to_string(),
+            reason: "off topic".to_string(),
+            stage,
+        });
+        app
+    }
+
+    #[test]
+    fn the_exclusion_prompt_shows_the_paper_stage_and_reason() {
+        let (text, _) = status_content(&excluding(ExclusionStage::Screening));
+        assert_eq!(
+            text,
+            "Exclude \"Actors\" — stage: screening (Tab: switch to full-text)  reason: off topic▏  (Enter: exclude, Esc: cancel)"
+        );
+        let (text, _) = status_content(&excluding(ExclusionStage::FullText));
+        assert!(text.contains("stage: full-text (Tab: switch to screening)"));
+    }
+
+    #[test]
+    fn the_exclusion_prompt_is_not_hidden_by_an_earlier_status_message() {
+        let mut app = excluding(ExclusionStage::Screening);
+        app.status.error("an earlier failure");
+        let (text, _) = status_content(&app);
+        assert!(text.starts_with("Exclude \"Actors\""));
+    }
+
+    #[test]
+    fn the_search_hints_offer_exclude() {
+        let mut app = App::new();
+        app.screen = Screen::Search;
+        assert!(hint_text(&app).contains("x: exclude"));
     }
 
     #[test]
