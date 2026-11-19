@@ -1,5 +1,5 @@
 {
-  description = "A Basic Rust DevShell";
+  description = "lazy-pax: a TUI paper manager built on pax-core";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -16,12 +16,14 @@
       pkgs = nixpkgs.legacyPackages."x86_64-linux";
       app_deps = [ pkgs.openssl ];
       naerskLib = pkgs.callPackage naersk { };
+      cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
     in
     {
 
       packages."x86_64-linux".default = pkgs.rustPlatform.buildRustPackage {
         pname = "lazy-pax";
-        version = "0.2.0";
+        # Read from Cargo.toml, so release-plz's version bumps reach the flake.
+        inherit (cargoToml.package) version;
         src = ./.;
 
         cargoLock = {
@@ -30,6 +32,16 @@
 
         buildInputs = app_deps;
         nativeBuildInputs = [ pkgs.pkg-config ];
+
+        meta = {
+          description = "A TUI paper manager built on pax-core";
+          mainProgram = "lazy-pax";
+        };
+      };
+
+      # For a consumer that prefers `pkgs.lazy-pax` over `inputs.lazy-pax.packages.<system>.default`.
+      overlays.default = final: prev: {
+        lazy-pax = self.packages.${prev.stdenv.hostPlatform.system}.default;
       };
 
       homeModules.default =
@@ -45,7 +57,7 @@
         {
           options.programs.lazy-pax = {
             enable = lib.mkEnableOption "lazy-pax, a TUI for pax-core";
-            package = lib.mkPackageOption (pkgs // { lazy-pax = self.packages.${pkgs.system}.default; }) "lazy-pax" { };
+            package = lib.mkPackageOption (pkgs // { lazy-pax = self.packages.${pkgs.stdenv.hostPlatform.system}.default; }) "lazy-pax" { };
           };
 
           config = lib.mkIf cfg.enable {
