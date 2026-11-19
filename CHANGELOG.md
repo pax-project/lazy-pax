@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/pax-project/lazy-pax/compare/v0.4.0...v0.4.1) - 2026-11-19
+
+### Fixed
+
+- *(flake)* build with naersk, read the version from Cargo.toml and set mainProgram ([#32](https://github.com/pax-project/lazy-pax/pull/32))
+
 ## [0.4.0](https://github.com/pax-project/lazy-pax/compare/v0.3.0...v0.4.0) - 2026-10-31
 
 ### Features
