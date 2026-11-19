@@ -16,28 +16,25 @@
       pkgs = nixpkgs.legacyPackages."x86_64-linux";
       app_deps = [ pkgs.openssl ];
       naerskLib = pkgs.callPackage naersk { };
-      cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
     in
     {
 
-      packages."x86_64-linux".default = pkgs.rustPlatform.buildRustPackage {
-        pname = "lazy-pax";
-        # Read from Cargo.toml, so release-plz's version bumps reach the flake.
-        inherit (cargoToml.package) version;
-        src = ./.;
-
-        cargoLock = {
-          lockFile = ./Cargo.lock;
-        };
-
-        buildInputs = app_deps;
-        nativeBuildInputs = [ pkgs.pkg-config ];
-
-        meta = {
-          description = "A TUI paper manager built on pax-core";
-          mainProgram = "lazy-pax";
-        };
-      };
+      # naersk, as pax-core and pax-ai build: nixpkgs' buildRustPackage sets
+      # AWS_LC_SYS_USE_SYSTEM=1, so aws-lc-sys (rustls, via reqwest) looks for
+      # a system AWS-LC that isn't there and the build fails. naersk takes the
+      # name and version from Cargo.toml.
+      packages."x86_64-linux".default =
+        (naerskLib.buildPackage {
+          src = ./.;
+          buildInputs = app_deps;
+          nativeBuildInputs = [ pkgs.pkg-config ];
+        }).overrideAttrs
+          (old: {
+            meta = (old.meta or { }) // {
+              description = "A TUI paper manager built on pax-core";
+              mainProgram = "lazy-pax";
+            };
+          });
 
       # For a consumer that prefers `pkgs.lazy-pax` over `inputs.lazy-pax.packages.<system>.default`.
       overlays.default = final: prev: {
